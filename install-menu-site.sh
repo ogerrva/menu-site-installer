@@ -1,13 +1,27 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — Instala Caddy, PM2, Node.js e configura menu-site completo
-# Inclui: Auto WWW Redirection e Criação de DNS na Cloudflare via API
+# Otimizado para não travar em perguntas do sistema (Non-Interactive)
+
+# Define que a instalação não deve fazer perguntas (evita travamento em 0%)
+export DEBIAN_FRONTEND=noninteractive
+
 set -euo pipefail
 
-# Cores
+# Cores para o terminal
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+# --- FUNÇÃO: wait_for_apt ---
+# Descrição: Verifica se o sistema está rodando atualizações automáticas (apt lock)
+# e espera elas terminarem antes de continuar, para não dar erro de "Could not get lock".
+wait_for_apt() {
+  while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+    echo -e "${YELLOW}Aguardando o sistema liberar o apt (atualizações em segundo plano)...${NC}"
+    sleep 5
+  done
+}
 
 if [[ $EUID -ne 0 ]]; then
   echo -e "${RED}⚠️ Execute este script como root (sudo).${NC}" >&2
@@ -15,42 +29,51 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 CERT_DIR="/etc/caddy"
-CF_CONFIG="/etc/caddy/.cf_config"
 
 # --- 1. Limpeza e Preparação ---
 echo -e "${YELLOW}==> Preparando sistema...${NC}"
+wait_for_apt
+# Para serviços antigos para evitar conflito
 systemctl stop nginx caddy >/dev/null 2>&1 || true
 pkill -9 caddy >/dev/null 2>&1 || true
-# Remover versões antigas se existirem
+
+# Remove instalações anteriores conflitantes
 apt-get remove --purge -y nginx* caddy* >/dev/null 2>&1 || true
 rm -f $CERT_DIR/Caddyfile* /etc/apt/sources.list.d/caddy*
 
 # --- 2. Instalação de Dependências ---
-echo -e "${YELLOW}==> Instalando dependências (curl, jq, gnupg)...${NC}"
+echo -e "${YELLOW}==> Instalando dependências básicas...${NC}"
+wait_for_apt
+# -qq suprime saida excessiva, -y aceita tudo automaticamente
 apt-get update -y
-apt-get install -y apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq
+apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq
 
 # --- 3. Instalação Node.js 18 ---
+# Descrição: Instala o Node.js para rodar aplicações e o PM2.
 if ! command -v node &> /dev/null; then
     echo -e "${YELLOW}==> Instalando Node.js 18...${NC}"
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    wait_for_apt
     apt-get install -y nodejs
 else
     echo -e "${GREEN}✓ Node.js já instalado.$(NC)"
 fi
 
 # --- 4. Firewall Básico ---
+# Descrição: Libera portas 80 (HTTP) e 443 (HTTPS).
 iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 iptables -I INPUT -p tcp --dport 443 -j ACCEPT
 netfilter-persistent save >/dev/null 2>&1 || service netfilter-persistent save >/dev/null 2>&1
 
 # --- 5. Instalação PM2 ---
+# Descrição: Gerenciador de processos para manter os sites online.
 echo -e "${YELLOW}==> Configurando PM2...${NC}"
 npm install -g pm2 http-server
 env PATH=$PATH:/usr/bin pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 pm2 save --force >/dev/null 2>&1
 
 # --- 6. Instalação Caddy (Repo Oficial) ---
+# Descrição: Servidor Web moderno que gera HTTPS automaticamente.
 echo -e "${YELLOW}==> Instalando Caddy Web Server...${NC}"
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 chmod 644 /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -58,10 +81,11 @@ ARCH=$(dpkg --print-architecture)
 cat > /etc/apt/sources.list.d/caddy-stable.list <<EOF
 deb [arch=$ARCH signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
 EOF
+wait_for_apt
 apt-get update -y
 apt-get install -y caddy
 
-# Configuração inicial Caddy
+# Cria Caddyfile padrão se não existir
 mkdir -p $CERT_DIR
 if [[ ! -f "$CERT_DIR/Caddyfile" ]]; then
     cat > $CERT_DIR/Caddyfile <<'EOF'
@@ -78,7 +102,7 @@ cat > /usr/local/bin/menu-site <<'EOF'
 # menu-site — Gerenciador Completo (Caddy + Cloudflare DNS + Auto WWW)
 set -euo pipefail
 
-# Configurações
+# Configurações Globais
 CADDYFILE="/etc/caddy/Caddyfile"
 CF_CERT="/etc/caddy/cloudflare.crt"
 CF_KEY="/etc/caddy/cloudflare.key"
@@ -107,8 +131,9 @@ header() {
   echo ""
 }
 
-# --- Funções Cloudflare API ---
-
+# --- FUNÇÃO: setup_cf_api ---
+# Descrição: Solicita ao usuário o Token e Zone ID da Cloudflare e salva
+# em um arquivo oculto (.cf_config) para uso posterior na criação de DNS.
 setup_cf_api() {
   header "Configurar API Cloudflare"
   echo "Para criar subdomínios automaticamente, insira seus dados."
@@ -135,6 +160,9 @@ CFEOF
   pause
 }
 
+# --- FUNÇÃO: create_dns_record ---
+# Descrição: Usa a API da Cloudflare para criar um registro tipo 'A' apontando
+# o domínio solicitado para o IP público desta VPS.
 create_dns_record() {
   local domain="$1"
   
@@ -145,12 +173,13 @@ create_dns_record() {
   
   source "$CF_CONFIG"
   
-  # Pegar IP Publico
+  # Pegar IP Publico da VPS
   local public_ip
   public_ip=$(curl -s https://api.ipify.org)
   
   echo -e "${YELLOW}Criando registro DNS A para $domain -> $public_ip ...${NC}"
   
+  local response
   # Define cabeçalhos dependendo se é Token ou Key+Email
   if [[ -z "$CF_EMAIL" ]]; then
     # Usando Token Bearer
@@ -167,6 +196,7 @@ create_dns_record() {
       --data "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$public_ip\",\"ttl\":1,\"proxied\":true}")
   fi
 
+  # Analisa a resposta JSON com jq
   success=$(echo "$response" | jq -r '.success')
   if [[ "$success" == "true" ]]; then
     echo -e "${GREEN}✓ Sucesso! Subdomínio criado na Cloudflare (Proxied).${NC}"
@@ -177,8 +207,8 @@ create_dns_record() {
   sleep 2
 }
 
-# --- Funções do Sistema ---
-
+# --- FUNÇÃO: detect_cf_certs ---
+# Descrição: Verifica se existem certificados SSL manuais (origin certificates) salvos.
 detect_cf_certs() {
   if [[ -f "$CF_CERT" && -f "$CF_KEY" ]]; then
     USE_CF_SSL=true
@@ -187,6 +217,8 @@ detect_cf_certs() {
   fi
 }
 
+# --- FUNÇÃO: get_next_port ---
+# Descrição: Calcula a próxima porta livre começando de 3000 para uso em novas aplicações PM2.
 get_next_port() {
   local last_port
   last_port=$(grep -E 'reverse_proxy localhost:[0-9]+' "$CADDYFILE" | sed -E 's/.*:([0-9]+)/\1/' | sort -n | tail -n1)
@@ -197,6 +229,8 @@ get_next_port() {
   fi
 }
 
+# --- FUNÇÃO: configure_cf_certs ---
+# Descrição: Permite ao usuário colar o conteúdo de certificados .pem/.key manualmente.
 configure_cf_certs() {
   header "Configurar Certificado Origin SSL (Arquivo)"
   echo "Isso é para o modo 'Full (Strict)' usando certificado gerado na Cloudflare."
@@ -219,6 +253,9 @@ configure_cf_certs() {
   pause
 }
 
+# --- FUNÇÃO: add_site ---
+# Descrição: Principal função. Cria um novo site, configura o redirecionamento WWW,
+# gera o DNS (opcional) e configura o Caddyfile e PM2.
 add_site() {
   detect_cf_certs
   header "Adicionar Novo Site"
@@ -237,7 +274,7 @@ add_site() {
   read -rp "Deseja criar o subdomínio/domínio na Cloudflare agora? (s/n): " create_dns
   if [[ "$create_dns" =~ ^[sS]$ ]]; then
     create_dns_record "$domain"
-    # Opcional: criar também o www se for domínio raiz, mas vamos focar no principal
+    # Opcional: criar também o www se for domínio raiz
     create_dns_record "www.$domain"
   fi
   
@@ -259,7 +296,7 @@ add_site() {
        tls_redirect_config="tls $CF_CERT $CF_KEY"
        ;;
     3) 
-        # HTTP only é complicado com redirecionamento HTTPS, mas vamos ajustar o domínio
+        # HTTP only
         domain="http://$domain"
         tls_config=""
         ;;
@@ -281,7 +318,6 @@ add_site() {
     
     # Iniciar exemplo no PM2
     mkdir -p "/var/www/$domain"
-    # Criar um server.js simples de exemplo
     cat > "/var/www/$domain/server.js" <<JS
 const http = require('http');
 const server = http.createServer((req, res) => {
@@ -334,11 +370,12 @@ EOB
     echo -e "Acesse: https://$domain (O www.$domain redirecionará automaticamente)"
   else
     echo -e "${RED}❌ Erro na validação do Caddyfile. Restaurando...${NC}"
-    # Lógica de rollback poderia ser adicionada aqui
   fi
   pause
 }
 
+# --- FUNÇÃO: list_sites ---
+# Descrição: Lista todos os sites ativos no Caddyfile.
 list_sites() {
   header "Sites Ativos"
   # Filtra nomes de domínios que não começam com www e não são diretivas
@@ -346,6 +383,8 @@ list_sites() {
   pause
 }
 
+# --- FUNÇÃO: remove_site ---
+# Descrição: Remove configuração do Caddyfile, arquivos locais e processo PM2.
 remove_site() {
   header "Remover Site"
   # Listar sites para o usuário escolher (array)
@@ -365,7 +404,6 @@ remove_site() {
     echo -e "${YELLOW}Removendo $domain e www.$domain...${NC}"
     
     # Remove do Caddyfile (Bloco principal e bloco www)
-    # Esta sed é um pouco complexa, remove blocos baseados no nome
     sed -i "/^$domain \{/,/^\}/d" "$CADDYFILE"
     sed -i "/^www.$domain \{/,/^\}/d" "$CADDYFILE"
     
@@ -418,6 +456,6 @@ EOF
 
 chmod +x /usr/local/bin/menu-site
 
-echo -e "${GREEN}==> Instalação Concluída!${NC}"
-echo -e "Digite ${YELLOW}menu-site${NC} para começar."
+echo -e "${GREEN}==> Instalação Concluída! Abrindo menu...${NC}"
+# Inicia automaticamente
 menu-site
