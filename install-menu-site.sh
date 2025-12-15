@@ -15,7 +15,7 @@ R='\033[1;31m'; G='\033[1;32m'; Y='\033[1;33m'; B='\033[1;34m'; C='\033[1;36m'; 
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}              ⚡ FYX-AUTOWEB MODULAR 6.0 ⚡               ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}              ⚡ FYX-AUTOWEB MODULAR 6.0 ⚡             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
