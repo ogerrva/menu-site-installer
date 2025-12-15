@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-menu-site.sh — Installer Profissional By OGERRVA
+# install-menu-site.sh — Installer Profissional By FYXWEB 
 # Versão 3.0 - Interface UI Melhorada
 
 export DEBIAN_FRONTEND=noninteractive
@@ -19,7 +19,7 @@ BG_BLUE='\033[44m'
 log_header() {
   clear
   echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BLUE}║ ${CYAN}           INSTALADOR DE AMBIENTE WEB - OGERRVA           ${BLUE}║${NC}"
+  echo -e "${BLUE}║ ${CYAN}           INSTALADOR DE AMBIENTE WEB - FYXWEB           ${BLUE}║${NC}"
   echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
