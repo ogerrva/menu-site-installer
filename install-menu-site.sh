@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 6.1 - Fix Unbound Variable & Modular Structure
+# Versão 7.0 - Safe Persistence & Diagnostics Tool
 
 export DEBIAN_FRONTEND=noninteractive
 set -u
@@ -8,8 +8,7 @@ set -u
 # --- URL DE ATUALIZAÇÃO ---
 UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/heads/main/install-menu-site.sh"
 
-# --- CORES (Instalador) ---
-# Corrigido: Definindo nomes completos para evitar erro de variável unbound
+# --- CORES ---
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -19,11 +18,11 @@ WHITE='\033[1;37m'
 NC='\033[0m'
 BOX_COLOR='\033[0;35m'
 
-# --- INSTALAÇÃO SISTEMA ---
+# --- FUNÇÕES DE LOG ---
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}              ⚡ FYX-AUTOWEB MODULAR 6.1 ⚡             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}              ⚡ FYX-AUTOWEB SYSTEM 7.0 ⚡              ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
@@ -41,16 +40,25 @@ wait_for_apt() {
 if [[ $EUID -ne 0 ]]; then echo -e "${RED}Execute como root.${NC}"; exit 1; fi
 
 log_header
-log_step "Preparando estrutura Modular"
+
+# --- PROTEÇÃO DE DADOS (PERSISTÊNCIA) ---
+log_step "Verificando configurações existentes"
+CF_BACKUP="/tmp/cf_config_backup"
+if [[ -f "/etc/caddy/.cf_config" ]]; then
+    cp "/etc/caddy/.cf_config" "$CF_BACKUP"
+    echo -ne "${GREEN}(Backup das chaves Cloudflare realizado)${NC} "
+fi
+echo ""
+
+log_step "Preparando sistema"
 wait_for_apt
 systemctl stop nginx >/dev/null 2>&1 || true
-# Remove source antiga para garantir update limpo
 rm -f /etc/apt/sources.list.d/caddy*
 
 # Dependências
-log_step "Instalando pacotes base"
+log_step "Instalando dependências (net-tools adicionado)"
 apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq >/dev/null 2>&1
+apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools >/dev/null 2>&1
 log_success
 
 # Node.js
@@ -72,7 +80,7 @@ pm2 save --force >/dev/null 2>&1
 log_success
 
 # Caddy
-log_step "Configurando Caddy Modular"
+log_step "Configurando Caddy"
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 cat > /etc/apt/sources.list.d/caddy-stable.list <<EOF
 deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
@@ -81,29 +89,30 @@ wait_for_apt
 apt-get update -qq >/dev/null 2>&1
 apt-get install -y caddy >/dev/null 2>&1
 
-# --- NOVA ESTRUTURA DE ARQUIVOS ---
+# Estrutura Modular
 mkdir -p /etc/caddy/sites-enabled
-
-# Configura o Caddyfile Principal para importar a pasta sites-enabled
 cat > /etc/caddy/Caddyfile <<'EOF'
 {
-    # Opções Globais
+    # Global Options
 }
-
-# Importar configurações modulares (um arquivo por site)
 import sites-enabled/*
 EOF
 
-systemctl enable caddy >/dev/null 2>&1
-# Tenta reiniciar, mas não falha o script se der erro agora (o menu conserta)
-systemctl restart caddy >/dev/null 2>&1 || true
-log_success
+# --- RESTAURAÇÃO DE DADOS ---
+if [[ -f "$CF_BACKUP" ]]; then
+    mv "$CF_BACKUP" "/etc/caddy/.cf_config"
+    chmod 600 "/etc/caddy/.cf_config"
+    log_step "Restaurando chaves Cloudflare"
+    log_success
+fi
 
-# --- CRIAÇÃO DO MENU ---
-log_step "Instalando Menu v6.1"
+systemctl enable caddy >/dev/null 2>&1
+systemctl restart caddy >/dev/null 2>&1 || true
+
+# --- MENU SCRIPT ---
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v6.1 (Modular)
+# FYX-AUTOWEB v7.0 (Safe & Diagnostic)
 set -u
 
 # VARIAVEIS
@@ -115,7 +124,7 @@ CF_KEY="/etc/caddy/cloudflare.key"
 UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/heads/main/install-menu-site.sh"
 BASE_PORT=3000
 
-# CORES (Menu Interno)
+# CORES
 R='\033[1;31m'; G='\033[1;32m'; Y='\033[1;33m'; B='\033[1;34m'; C='\033[1;36m'; W='\033[1;37m'; NC='\033[0m'; BOX_COLOR='\033[0;35m'
 trap '' SIGINT SIGQUIT SIGTSTP
 
@@ -123,10 +132,9 @@ pause() { echo ""; echo -e "${BOX_COLOR}─────────────�
 
 draw_header() {
   clear
-  # Contagem baseada em arquivos
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB MODULAR 6.1 ⚡${NC}               ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 7.0 ⚡${NC}              ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -135,33 +143,25 @@ draw_header() {
 
 draw_menu_item() { echo -e "   ${C}[$1]${NC} ${W}$2${NC}"; }
 
-# --- FUNÇÃO CRÍTICA: RESTART/RELOAD SEGURO ---
+# --- CORE FUNCTIONS ---
 reload_caddy() {
     echo -e "\n${Y}Validando configurações...${NC}"
-    
     if ! caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
-        echo -e "${R}❌ Erro: Configuração inválida!${NC}"
+        echo -e "${R}❌ Configuração Inválida! Veja o erro:${NC}"
         caddy validate --config /etc/caddy/Caddyfile
         return 1
     fi
-
     if systemctl reload caddy >/dev/null 2>&1; then
         echo -e "${G}✔ Caddy Recarregado.${NC}"
     else
         echo -e "${Y}⚠ Reload falhou, forçando Restart...${NC}"
-        if systemctl restart caddy >/dev/null 2>&1; then
-             echo -e "${G}✔ Caddy Reiniciado.${NC}"
-        else
-             echo -e "${R}❌ Falha crítica no serviço Caddy. Verifique logs.${NC}"
-             return 1
-        fi
+        systemctl restart caddy >/dev/null 2>&1 || { echo -e "${R}❌ Falha crítica no Caddy.${NC}"; return 1; }
+        echo -e "${G}✔ Caddy Reiniciado.${NC}"
     fi
     return 0
 }
 
-# --- FUNÇÕES AUXILIARES ---
 get_next_port() {
-  # Busca portas em todos os arquivos dentro de sites-enabled
   local last=$(grep -r "reverse_proxy localhost:" "$SITES_DIR" 2>/dev/null | sed -E 's/.*:([0-9]+).*/\1/' | sort -n | tail -n1)
   if [[ "$last" =~ ^[0-9]+$ ]]; then echo $((last + 1)); else echo "$BASE_PORT"; fi
 }
@@ -169,23 +169,18 @@ get_next_port() {
 write_caddy_config() {
     local domain=$1; local ssl=$2; local port=$3
     local tls_line=""; local tls_redir=""
-    
     [[ "$ssl" == "2" ]] && tls_line="tls $CF_CERT $CF_KEY" && tls_redir=$tls_line
     [[ "$ssl" == "3" ]] && domain="http://$domain"
     
     local block="file_server"
     [[ "$port" != "0" ]] && block="reverse_proxy localhost:$port"
 
-    # ESCREVE NO ARQUIVO INDIVIDUAL
-    local file_path="$SITES_DIR/$domain"
-    
-    cat > "$file_path" <<EOB
+    cat > "$SITES_DIR/$domain" <<EOB
 # Config: $domain
 www.$domain {
     $tls_redir
     redir https://$domain{uri}
 }
-
 $domain {
     $tls_line
     root * /var/www/$domain
@@ -193,29 +188,67 @@ $domain {
     $block
 }
 EOB
-    echo -e "${G}✔ Arquivo criado: $file_path${NC}"
+    echo -e "${G}✔ Arquivo criado: $SITES_DIR/$domain${NC}"
+}
+
+# --- DIAGNOSTIC TOOL ---
+diagnose_system() {
+    draw_header
+    echo -e "${Y}🕵️  DIAGNÓSTICO DE SISTEMA${NC}"
+    echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+    
+    # 1. Verifica Caddy
+    echo -ne "Serviço Caddy: "
+    if systemctl is-active --quiet caddy; then echo -e "${G}ONLINE${NC}"; else echo -e "${R}OFFLINE${NC}"; fi
+    
+    # 2. Verifica PM2
+    echo -ne "Processos PM2: "
+    local pm2_count=$(pm2 list | grep online | wc -l)
+    echo -e "${G}$pm2_count rodando${NC}"
+    
+    echo -e "\n${C}--- Verificação de Portas (Apps) ---${NC}"
+    
+    # Loop pelos sites configurados
+    if [[ -z $(ls -A "$SITES_DIR") ]]; then
+        echo "Nenhum site configurado."
+    else
+        for site_file in "$SITES_DIR"/*; do
+            local domain=$(basename "$site_file")
+            local port=$(grep "reverse_proxy" "$site_file" | awk -F: '{print $2}' | tr -d ' ')
+            
+            if [[ -n "$port" ]]; then
+                # Verifica se algo ouve na porta
+                echo -ne "App $domain (Porta $port): "
+                if netstat -tulpn 2>/dev/null | grep -q ":$port "; then
+                    echo -e "${G}✅ ABERTA (Ouvindo)${NC}"
+                else
+                    echo -e "${R}❌ FECHADA (Nada rodando)${NC}"
+                    echo -e "   -> ${Y}Dica: Seu app Node não está usando a porta $port ou crashou.${NC}"
+                fi
+            else
+                echo -e "Site $domain: ${C}Estático (OK)${NC}"
+            fi
+        done
+    fi
+    
+    echo -e "\n${C}--- Últimos Logs do Caddy ---${NC}"
+    journalctl -u caddy --no-pager -n 5
+    pause
 }
 
 # --- ACTIONS ---
-
 list_sites() {
-  draw_header
-  echo -e "${Y}📋 SITES ATIVOS (sites-enabled)${NC}"
-  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
-  
-  if [[ -z $(ls -A "$SITES_DIR") ]]; then
-      echo "Nenhum site configurado."
-  else
-      # Lista arquivos e tenta identificar o tipo
+  draw_header; echo -e "${Y}📋 SITES ATIVOS${NC}"; echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+  if [[ -z $(ls -A "$SITES_DIR") ]]; then echo "Vazio."; else
       local i=1
       for site_file in "$SITES_DIR"/*; do
-          local domain=$(basename "$site_file")
+          local d=$(basename "$site_file")
           local type="Estático"
           if grep -q "reverse_proxy" "$site_file"; then
-             local port=$(grep "reverse_proxy" "$site_file" | awk -F: '{print $2}')
-             type="App Porta: $port"
+             local p=$(grep "reverse_proxy" "$site_file" | awk -F: '{print $2}')
+             type="App Porta: $p"
           fi
-          printf "   ${C}[%02d]${NC} %-30s ${W}%s${NC}\n" "$i" "$domain" "$type"
+          printf "   ${C}[%02d]${NC} %-30s ${W}%s${NC}\n" "$i" "$d" "$type"
           ((i++))
       done
   fi
@@ -223,17 +256,12 @@ list_sites() {
 }
 
 add_site() {
-  draw_header
-  echo -e "${Y}➕ NOVO SITE${NC}"
+  draw_header; echo -e "${Y}➕ NOVO SITE${NC}"
   read -rp "🌐 Domínio: " d
   d=$(echo "$d" | sed -E 's/^\s*//;s/\s*$//;s/^(https?:\/\/)?(www\.)?//')
   [[ -z "$d" ]] && return
-  
   [[ -f "$CF_CONFIG" ]] && create_dns_record "$d" && create_dns_record "www.$d"
-  
-  echo -e "📦 TIPO: 1) Estático  2) App PM2"
-  read -rp "Opção: " t; t=${t:-1}
-  
+  echo -e "📦 TIPO: 1) Estático  2) App PM2"; read -rp "Opção: " t; t=${t:-1}
   mkdir -p "/var/www/$d"
   p="0"
   if [[ "$t" == "2" ]]; then
@@ -242,64 +270,39 @@ add_site() {
 const http = require('http');
 http.createServer((r,s)=>{s.writeHead(200);s.end('<h1>$d : $p</h1>')}).listen($p);
 JS
-    pm2 start "/var/www/$d/server.js" --name "$d" >/dev/null
-    pm2 save >/dev/null
+    pm2 start "/var/www/$d/server.js" --name "$d" >/dev/null; pm2 save >/dev/null
   else
     [[ ! -f "/var/www/$d/index.html" ]] && echo "<h1>$d</h1>" > "/var/www/$d/index.html"
   fi
-  
   write_caddy_config "$d" "1" "$p"
   reload_caddy
   pause
 }
 
 rehost_site() {
-    draw_header
-    echo -e "${Y}📂 RE-HOSPEDAR (/var/www/)${NC}"
-    echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+    draw_header; echo -e "${Y}📂 RE-HOSPEDAR${NC}"; echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
     dirs=($(ls -d /var/www/*/ 2>/dev/null | xargs -n 1 basename))
-    if [[ ${#dirs[@]} -eq 0 ]]; then echo "Nenhuma pasta encontrada."; pause; return; fi
-    
-    local i=1
-    for dir in "${dirs[@]}"; do
+    if [[ ${#dirs[@]} -eq 0 ]]; then echo "Vazio."; pause; return; fi
+    local i=1; for dir in "${dirs[@]}"; do
         status=$(test -f "$SITES_DIR/$dir" && echo "${G}[ON]${NC}" || echo "${Y}[OFF]${NC}")
         echo -e "   ${C}[$i]${NC} $dir $status"
         ((i++))
     done
-    
-    echo ""
-    read -rp "Número da pasta para ativar: " num
+    echo ""; read -rp "Número: " num
     if [[ "$num" -gt 0 && "$num" -le "${#dirs[@]}" ]]; then
         domain="${dirs[$((num-1))]}"
-        echo -e "\n${Y}Selecionado: $domain${NC}"
-        
-        read -rp "Este site é um App PM2 (Node/Python)? (s/N): " is_app
-        port="0"
-        
+        read -rp "É App PM2? (s/N): " is_app; port="0"
         if [[ "$is_app" =~ ^[sS]$ ]]; then
-             echo ""
-             echo -e "   ${C}⚙ MODO DE PORTA:${NC}"
-             echo -e "   1) Manual (Já sei a porta)"
-             echo -e "   2) Automática (Gerar nova porta)"
-             read -rp "   Opção [1]: " p_opt
-             p_opt=${p_opt:-1}
-             
+             read -rp "1) Manual  2) Auto (Opção): " p_opt
              if [[ "$p_opt" == "2" ]]; then
                  port=$(get_next_port)
-                 echo -e "   ${G}✔ Porta Gerada: $port${NC}"
-                 echo -e "   ${Y}⚠ Edite seu app para rodar na porta $port e reinicie o PM2!${NC}"
-                 read -rp "   Pressione ENTER para continuar..." dump
+                 echo -e "${Y}⚠ Configure seu app na porta $port!${NC}"; read -r
              else
-                 read -rp "   Digite a porta interna (ex: 3000): " port
+                 read -rp "Porta interna: " port
              fi
         fi
-        
-        echo ""
-        echo -e "   ${C}🔐 SSL:${NC} 1) Auto  2) Cloudflare"
-        read -rp "   Opção [1]: " ssl_opt
-        ssl_opt=${ssl_opt:-1}
-        
-        write_caddy_config "$domain" "$ssl_opt" "$port"
+        read -rp "SSL: 1) Auto 2) Cloudflare: " ssl; ssl=${ssl:-1}
+        write_caddy_config "$domain" "$ssl" "$port"
         reload_caddy
     fi
     pause
@@ -307,25 +310,14 @@ rehost_site() {
 
 remove_site() {
   draw_header; echo -e "${Y}🗑️  REMOVER${NC}"
-  
   if [[ -z $(ls -A "$SITES_DIR") ]]; then echo "Vazio."; pause; return; fi
-  
-  # Cria array de arquivos
-  sites=($(ls "$SITES_DIR"))
-  
-  local i=1; for site in "${sites[@]}"; do echo -e "   ${C}[$i]${NC} $site"; ((i++)); done
+  sites=($(ls "$SITES_DIR")); local i=1; for site in "${sites[@]}"; do echo -e "   ${C}[$i]${NC} $site"; ((i++)); done
   read -rp "Número: " num
-  
-  if [[ "$num" -gt 0 && "$num" -le "${#sites[@]}" ]]; then
+  if [[ "$num" -gt 0 ]]; then
     d="${sites[$((num-1))]}"
-    
-    echo -e "${Y}Removendo config: $SITES_DIR/$d${NC}"
     rm -f "$SITES_DIR/$d"
-    
     pm2 delete "$d" >/dev/null 2>&1 || true; pm2 save >/dev/null
-    read -rp "Apagar arquivos em /var/www/$d? (s/N): " dl
-    [[ "$dl" == "s" ]] && rm -rf "/var/www/$d"
-    
+    read -rp "Apagar arquivos? (s/N): " dl; [[ "$dl" == "s" ]] && rm -rf "/var/www/$d"
     reload_caddy
     echo -e "${G}✔ Feito.${NC}"
   fi
@@ -333,18 +325,15 @@ remove_site() {
 }
 
 sync_pm2_sites() {
-    draw_header
-    echo -e "${Y}🔄 SYNC PM2${NC}"
-    pm2_apps=$(pm2 jlist | jq -r '.[].name')
-    found=0
+    draw_header; echo -e "${Y}🔄 SYNC PM2${NC}"
+    pm2_apps=$(pm2 jlist | jq -r '.[].name'); found=0
     for app in $pm2_apps; do
         if [[ -f "$SITES_DIR/$app" ]]; then continue; fi
-        found=1
-        echo -e "\n${C}🔹 App novo:${NC} ${W}$app${NC}"
-        read -rp "   Criar site agora? (s/n): " c
+        found=1; echo -e "\n${C}🔹 App novo:${NC} ${W}$app${NC}"
+        read -rp "   Criar site? (s/n): " c
         if [[ "$c" == "s" ]]; then
              read -rp "   Domínio [$app]: " d; d=${d:-$app}
-             read -rp "   Porta do App: " p
+             read -rp "   Porta: " p
              [[ -f "$CF_CONFIG" ]] && create_dns_record "$d" && create_dns_record "www.$d"
              write_caddy_config "$d" "1" "$p"
              mkdir -p "/var/www/$d"
@@ -355,40 +344,31 @@ sync_pm2_sites() {
 }
 
 system_tools() {
-    draw_header
-    echo -e "${Y}🛠️  FERRAMENTAS${NC}"
-    echo -e "   1) ${G}Atualizar Script${NC}"
-    echo -e "   2) ${Y}Reparar Instalação${NC}"
-    echo -e "   3) ${R}RESET DE FÁBRICA${NC} (Apaga todos os sites do Caddy)"
-    echo ""
-    read -rp "   Opção: " opt
+    draw_header; echo -e "${Y}🛠️  FERRAMENTAS${NC}"
+    echo -e "   1) ${G}Atualizar Script${NC}"; echo -e "   2) ${Y}Reparar Instalação${NC}"
+    echo -e "   3) ${R}RESET DE FÁBRICA${NC}"; echo -e "   9) ${C}Diagnosticar Erros${NC}"
+    echo ""; read -rp "   Opção: " opt
     case $opt in
-        1)  echo -e "\n${Y}Baixando...${NC}"; curl -sSL "$UPDATE_URL" > /tmp/install.sh; bash /tmp/install.sh; exit 0 ;;
-        2)  echo -e "\n${Y}Reinstalando...${NC}"; apt-get install --reinstall -y caddy nodejs; npm install -g pm2; echo "OK"; pause ;;
-        3)  echo -e "\n${R}CONFIRMA? (Apaga /etc/caddy/sites-enabled/*)${NC}"; read -rp "Digite 'RESET': " c
-            if [[ "$c" == "RESET" ]]; then
-                rm -f "$SITES_DIR"/*
-                reload_caddy
-                echo "Resetado."
-            fi
-            pause ;;
+        1) curl -sSL "$UPDATE_URL" > /tmp/install.sh; bash /tmp/install.sh; exit 0 ;;
+        2) apt-get install --reinstall -y caddy nodejs; npm install -g pm2; echo "OK"; pause ;;
+        3) read -rp "Digite 'RESET': " c; [[ "$c" == "RESET" ]] && rm -f "$SITES_DIR"/* && reload_caddy && echo "Resetado."; pause ;;
+        9) diagnose_system ;;
     esac
 }
 
-# --- CF HELPERS ---
 setup_cf_api() {
   draw_header; echo -e "${Y}🔧 CLOUDFLARE API${NC}"
-  read -rp "Email (Enter se usar Token): " e
-  read -rp "Token/Key: " k
-  read -rp "Zone ID: " z
+  read -rp "Email (Enter se usar Token): " e; read -rp "Token/Key: " k; read -rp "Zone ID: " z
   [[ -n "$k" ]] && echo "CF_EMAIL=\"$e\"" > "$CF_CONFIG" && echo "CF_KEY=\"$k\"" >> "$CF_CONFIG" && echo "CF_ZONE=\"$z\"" >> "$CF_CONFIG" && echo -e "${G}Salvo!${NC}"
   pause
 }
 create_dns_record() {
   if [[ ! -f "$CF_CONFIG" ]]; then return; fi
-  source "$CF_CONFIG"
-  local d=$1; local ip=$(curl -s https://api.ipify.org)
+  source "$CF_CONFIG"; local d=$1; local ip=$(curl -s https://api.ipify.org)
   echo -ne "${Y}⚡ DNS ($d)... ${NC}"
+  local H1="Authorization: Bearer $CF_KEY"; [[ -n "$CF_EMAIL" ]] && H1="X-Auth-Key: $CF_KEY"
+  local H2=""; [[ -n "$CF_EMAIL" ]] && H2="-H \"X-Auth-Email: $CF_EMAIL\""
+  # Curl simplificado para evitar conflito de quotes
   if [[ -z "$CF_EMAIL" ]]; then
       curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records" -H "Authorization: Bearer $CF_KEY" -H "Content-Type: application/json" --data "{\"type\":\"A\",\"name\":\"$d\",\"content\":\"$ip\",\"ttl\":1,\"proxied\":true}" >/dev/null
   else
@@ -397,7 +377,6 @@ create_dns_record() {
   echo -e "${G}OK${NC}"
 }
 
-# --- LOOP ---
 while true; do
   draw_header
   draw_menu_item "1" "Listar Sites"
@@ -406,14 +385,15 @@ while true; do
   draw_menu_item "4" "Sync Apps PM2"
   draw_menu_item "5" "Remover Site"
   echo ""; draw_menu_item "6" "Config CF API"; draw_menu_item "7" "Monitor PM2"
-  echo ""; draw_menu_item "8" "Ferramentas"; draw_menu_item "0" "Sair"; echo ""
+  echo ""; draw_menu_item "8" "Ferramentas"; draw_menu_item "9" "Diagnosticar Erros"
+  echo ""; draw_menu_item "0" "Sair"; echo ""
   read -rp "Opção: " opt
   case $opt in
-    1) list_sites ;; 2) add_site ;; 3) rehost_site ;; 4) sync_pm2_sites ;; 5) remove_site ;; 6) setup_cf_api ;; 7) pm2 monit ;; 8) system_tools ;; 0) exit 0 ;;
+    1) list_sites ;; 2) add_site ;; 3) rehost_site ;; 4) sync_pm2_sites ;; 5) remove_site ;; 6) setup_cf_api ;; 7) pm2 monit ;; 8) system_tools ;; 9) diagnose_system ;; 0) exit 0 ;;
   esac
 done
 EOF
 chmod +x /usr/local/bin/menu-site
 log_success
-echo -e "${GREEN}✅ INSTALAÇÃO MODULAR CONCLUÍDA! Digite: menu-site${NC}"
+echo -e "${GREEN}✅ INSTALAÇÃO 7.0 COMPLETA! Digite: menu-site${NC}"
 menu-site
