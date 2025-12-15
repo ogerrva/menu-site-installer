@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 6.0 - Modular (sites-enabled)
+# Versão 6.1 - Fix Unbound Variable & Modular Structure
 
 export DEBIAN_FRONTEND=noninteractive
 set -u
@@ -8,14 +8,22 @@ set -u
 # --- URL DE ATUALIZAÇÃO ---
 UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/heads/main/install-menu-site.sh"
 
-# --- CORES ---
-R='\033[1;31m'; G='\033[1;32m'; Y='\033[1;33m'; B='\033[1;34m'; C='\033[1;36m'; W='\033[1;37m'; NC='\033[0m'; BOX_COLOR='\033[0;35m'
+# --- CORES (Instalador) ---
+# Corrigido: Definindo nomes completos para evitar erro de variável unbound
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+CYAN='\033[1;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+BOX_COLOR='\033[0;35m'
 
 # --- INSTALAÇÃO SISTEMA ---
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}              ⚡ FYX-AUTOWEB MODULAR 6.0 ⚡             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}              ⚡ FYX-AUTOWEB MODULAR 6.1 ⚡             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
@@ -30,16 +38,17 @@ wait_for_apt() {
   done
 }
 
-if [[ $EUID -ne 0 ]]; then echo -e "${R}Execute como root.${NC}"; exit 1; fi
+if [[ $EUID -ne 0 ]]; then echo -e "${RED}Execute como root.${NC}"; exit 1; fi
 
 log_header
 log_step "Preparando estrutura Modular"
 wait_for_apt
 systemctl stop nginx >/dev/null 2>&1 || true
+# Remove source antiga para garantir update limpo
 rm -f /etc/apt/sources.list.d/caddy*
 
 # Dependências
-log_step "Instalando pacotes"
+log_step "Instalando pacotes base"
 apt-get update -qq >/dev/null 2>&1
 apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq >/dev/null 2>&1
 log_success
@@ -81,19 +90,20 @@ cat > /etc/caddy/Caddyfile <<'EOF'
     # Opções Globais
 }
 
-# Importar configurações modulares
+# Importar configurações modulares (um arquivo por site)
 import sites-enabled/*
 EOF
 
 systemctl enable caddy >/dev/null 2>&1
+# Tenta reiniciar, mas não falha o script se der erro agora (o menu conserta)
 systemctl restart caddy >/dev/null 2>&1 || true
 log_success
 
 # --- CRIAÇÃO DO MENU ---
-log_step "Instalando Menu v6.0"
+log_step "Instalando Menu v6.1"
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v6.0 (Modular)
+# FYX-AUTOWEB v6.1 (Modular)
 set -u
 
 # VARIAVEIS
@@ -105,7 +115,7 @@ CF_KEY="/etc/caddy/cloudflare.key"
 UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/heads/main/install-menu-site.sh"
 BASE_PORT=3000
 
-# CORES
+# CORES (Menu Interno)
 R='\033[1;31m'; G='\033[1;32m'; Y='\033[1;33m'; B='\033[1;34m'; C='\033[1;36m'; W='\033[1;37m'; NC='\033[0m'; BOX_COLOR='\033[0;35m'
 trap '' SIGINT SIGQUIT SIGTSTP
 
@@ -116,7 +126,7 @@ draw_header() {
   # Contagem baseada em arquivos
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB MODULAR 6.0 ⚡${NC}               ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB MODULAR 6.1 ⚡${NC}               ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -142,7 +152,7 @@ reload_caddy() {
         if systemctl restart caddy >/dev/null 2>&1; then
              echo -e "${G}✔ Caddy Reiniciado.${NC}"
         else
-             echo -e "${R}❌ Falha crítica no serviço Caddy.${NC}"
+             echo -e "${R}❌ Falha crítica no serviço Caddy. Verifique logs.${NC}"
              return 1
         fi
     fi
