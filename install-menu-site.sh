@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 16.0 - Multi-PHP Manager & Cloudflare Rehost Fix
+# Versão 17.0 - Anti-Freeze & Verbose Mode
 
-# 1. Configurações de Segurança
+# 1. Configurações de Segurança e Não-Interatividade
 export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C.UTF-8
 set -u
+
+# Opções do APT para não perguntar nada (Força Sim para tudo e mantêm configs antigas)
+APT_OPTS="-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
 # 2. DEFINIÇÃO DE CORES
 RED='\033[1;31m'
@@ -22,17 +26,26 @@ UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/h
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 16.0 ⚡             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 17.0 ⚡               ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
 log_step() { echo -ne "${BLUE}[INFO]${NC} $1... "; }
 log_success() { echo -e "${GREEN}✅ SUCESSO${NC}"; }
 
+# Função de espera do APT melhorada
 wait_for_apt() {
+  local count=0
   while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo -ne "${YELLOW}⏳ Aguardando apt... ${NC}\r"
-    sleep 3
+    echo -ne "${YELLOW}⏳ O apt está ocupado por outro processo... aguardando ($count s)${NC}\r"
+    sleep 5
+    count=$((count+5))
+    # Se demorar mais de 60s, tenta matar processos travados
+    if [ $count -gt 60 ]; then
+        echo -e "\n${RED}Desbloqueando apt forçadamente...${NC}"
+        killall apt apt-get 2>/dev/null
+        rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock*
+    fi
   done
 }
 
@@ -51,40 +64,52 @@ wait_for_apt
 systemctl stop nginx >/dev/null 2>&1 || true
 rm -f /etc/apt/sources.list.d/caddy*
 
-log_step "Instalando dependências base"
-apt-get update -qq >/dev/null 2>&1
-# Adiciona repositório PHP (Ondrej) para garantir acesso a todas versões
-apt-get install -y -qq software-properties-common >/dev/null 2>&1
-if ! grep -q "ondrej/php" /etc/apt/sources.list.d/*; then
-    add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1
-fi
-apt-get update -qq >/dev/null 2>&1
+# --- MODO VERBOSO ATIVADO PARA DEPENDÊNCIAS ---
+echo -e "${CYAN}--- INICIANDO INSTALAÇÃO DE PACOTES (MODO VERBOSO) ---${NC}"
+echo -e "${YELLOW}Se demorar, você verá o motivo abaixo:${NC}"
 
-# Instala pacotes essenciais
-apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full zip unzip git >/dev/null 2>&1
+wait_for_apt
+apt-get update
+
+echo -e "${BLUE}> Instalando gerenciador de repositórios...${NC}"
+apt-get install $APT_OPTS software-properties-common
+
+echo -e "${BLUE}> Adicionando Repositório PHP (Ondrej)...${NC}"
+# Adiciona PPA sem travar
+if ! grep -q "ondrej/php" /etc/apt/sources.list.d/*; then
+    add-apt-repository -y ppa:ondrej/php
+fi
+apt-get update
+
+echo -e "${BLUE}> Instalando Pacotes Essenciais (PHP, Ferramentas)...${NC}"
+# Instalação explícita sem esconder output
+apt-get install $APT_OPTS apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full zip unzip git
+
+echo -e "${CYAN}--- DEPENDÊNCIAS CONCLUÍDAS ---${NC}"
 log_success
 
 log_step "Verificando Node/PM2"
 if ! command -v node &> /dev/null; then 
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
-    wait_for_apt
-    apt-get install -y nodejs >/dev/null 2>&1
+    echo "Instalando Node.js..."
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    apt-get install $APT_OPTS nodejs
 fi
-npm install -g pm2 http-server >/dev/null 2>&1
-pm2 update >/dev/null 2>&1
+npm install -g pm2 http-server
+pm2 update
 env PATH=$PATH:/usr/bin pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
-pm2 save --force >/dev/null 2>&1
+pm2 save --force
 log_success
 
-log_step "Instalando Caddy (Correção GPG)"
-# ADICIONADO --yes PARA EVITAR PERGUNTA DE OVERWRITE
+log_step "Instalando Caddy (Keyring Fix)"
+# Garante que a pasta existe
+mkdir -p /usr/share/keyrings
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 cat > /etc/apt/sources.list.d/caddy-stable.list <<EOF
 deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
 EOF
 wait_for_apt
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y caddy >/dev/null 2>&1
+apt-get update
+apt-get install $APT_OPTS caddy
 
 mkdir -p /etc/caddy/sites-enabled
 mkdir -p "$CF_PROFILE_DIR"
@@ -106,7 +131,7 @@ log_success
 # --- MENU SCRIPT ---
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v16.0
+# FYX-AUTOWEB v17.0
 set -u
 
 # VARIAVEIS
@@ -128,7 +153,7 @@ draw_header() {
   clear
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 16.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 17.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -172,14 +197,14 @@ detect_running_port() {
 
 ensure_php_installed() {
     local ver=$1
-    # Verifica se o fpm está instalado
     if ! dpkg -l | grep -q "php$ver-fpm"; then
-        echo -e "\n${Y}Instalando PHP $ver e extensões comuns...${NC}"
+        echo -e "\n${Y}Instalando PHP $ver e extensões...${NC}"
+        # Força instalação sem perguntas
+        export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y "php$ver-fpm" "php$ver-mysql" "php$ver-curl" "php$ver-gd" "php$ver-mbstring" "php$ver-xml" "php$ver-zip"
+        apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "php$ver-fpm" "php$ver-mysql" "php$ver-curl" "php$ver-gd" "php$ver-mbstring" "php$ver-xml" "php$ver-zip"
         echo -e "${G}✔ PHP $ver instalado!${NC}"
     fi
-    # Garante que o serviço está rodando
     systemctl start "php$ver-fpm"
     systemctl enable "php$ver-fpm" >/dev/null 2>&1
 }
@@ -284,13 +309,11 @@ write_caddy_config() {
     [[ "$ssl" == "3" ]] && domain="http://$domain"
     
     local block=""
-    
     if [[ "$type" == "static" ]]; then
         block="file_server"
     elif [[ "$type" == "proxy" ]]; then
         block="reverse_proxy localhost:$extra"
     elif [[ "$type" == "php" ]]; then
-        # Extra contém a versão do PHP (ex: 8.2)
         local socket=$(get_php_socket "$extra")
         block="php_fastcgi $socket
         file_server"
@@ -332,7 +355,7 @@ rehost_site() {
         domain="${dirs[$((num-1))]}"
         local site_path="/var/www/$domain"
         
-        # --- PYTHON VENV ---
+        # PYTHON VENV CHECK
         if [[ -f "$site_path/requirements.txt" ]]; then
              echo -e "\n${C}🐍 PYTHON DETECTADO${NC}"
              read -rp "   Criar Ambiente Virtual (venv) e instalar dependências? (s/N): " inst_py
@@ -347,7 +370,7 @@ rehost_site() {
              fi
         fi
 
-        # --- CLOUDFLARE DNS CHECK NO REHOST ---
+        # CLOUDFLARE DNS CHECK
         select_and_create_dns "$domain"
 
         if [[ -f "$SITES_DIR/$domain" ]]; then
@@ -358,7 +381,6 @@ rehost_site() {
 
         echo -e "\n${Y}Configurando aplicação...${NC}"
         
-        # Detecção de App
         local detected_port=$(detect_running_port "$domain")
         local port="0"
         local site_type="static"
@@ -380,14 +402,12 @@ rehost_site() {
                 2)
                     site_type="php"
                     echo -e "\n   ${C}Escolha a versão do PHP:${NC}"
-                    echo -e "   1) PHP 8.3 (Mais recente)"
-                    echo -e "   2) PHP 8.2 (Estável)"
+                    echo -e "   1) PHP 8.3"
+                    echo -e "   2) PHP 8.2 (Padrão)"
                     echo -e "   3) PHP 8.1"
-                    echo -e "   4) PHP 7.4 (Legado)"
+                    echo -e "   4) PHP 7.4"
                     read -rp "   Versão [2]: " php_v_opt
-                    case $php_v_opt in
-                        1) ver="8.3" ;; 3) ver="8.1" ;; 4) ver="7.4" ;; *) ver="8.2" ;;
-                    esac
+                    case $php_v_opt in 1) ver="8.3" ;; 3) ver="8.1" ;; 4) ver="7.4" ;; *) ver="8.2" ;; esac
                     ensure_php_installed "$ver"
                     extra_data="$ver"
                     ;;
@@ -395,9 +415,7 @@ rehost_site() {
                     site_type="proxy"
                     read -rp "   Porta interna do App: " extra_data
                     ;;
-                *)
-                    site_type="static"
-                    ;;
+                *) site_type="static" ;;
             esac
         fi
         
@@ -563,5 +581,5 @@ done
 EOF
 chmod +x /usr/local/bin/menu-site
 log_success
-echo -e "${GREEN}✅ INSTALAÇÃO 16.0 COMPLETA! Digite: menu-site${NC}"
+echo -e "${GREEN}✅ INSTALAÇÃO 17.0 COMPLETA! Digite: menu-site${NC}"
 menu-site
