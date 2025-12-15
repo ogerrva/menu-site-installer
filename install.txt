@@ -1,0 +1,1 @@
+bash <(curl -sSL https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/heads/main/install-menu-site.sh)
