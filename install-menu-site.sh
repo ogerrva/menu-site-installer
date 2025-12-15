@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 11.0 - Multi-Cloudflare & Crash Protection
+# Versão 14.0 - Python Support & Folder Access
 
 # 1. Configurações de Segurança
 export DEBIAN_FRONTEND=noninteractive
 set -u
 
-# 2. DEFINIÇÃO DE CORES (Imediata)
+# 2. DEFINIÇÃO DE CORES
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -16,14 +16,13 @@ WHITE='\033[1;37m'
 NC='\033[0m'
 BOX_COLOR='\033[0;35m'
 
-# URL de atualização
 UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/heads/main/install-menu-site.sh"
 
-# --- FUNÇÕES DE LOG (Instalação) ---
+# --- FUNÇÕES DE LOG ---
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 11.0 ⚡             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 14.0 ⚡             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
@@ -41,14 +40,10 @@ if [[ $EUID -ne 0 ]]; then echo -e "${RED}Erro: Execute como root.${NC}"; exit 1
 
 # --- SETUP DO SISTEMA ---
 log_header
-
-# Backup de perfis Cloudflare
-log_step "Verificando backups"
+log_step "Backup de perfis Cloudflare"
 CF_PROFILE_DIR="/etc/caddy/cf_profiles"
 BACKUP_DIR="/tmp/cf_profiles_backup"
-if [[ -d "$CF_PROFILE_DIR" ]]; then
-    cp -r "$CF_PROFILE_DIR" "$BACKUP_DIR"
-fi
+[[ -d "$CF_PROFILE_DIR" ]] && cp -r "$CF_PROFILE_DIR" "$BACKUP_DIR"
 echo ""
 
 log_step "Preparando sistema"
@@ -56,9 +51,10 @@ wait_for_apt
 systemctl stop nginx >/dev/null 2>&1 || true
 rm -f /etc/apt/sources.list.d/caddy*
 
-log_step "Instalando dependências"
+log_step "Instalando dependências (incluindo Python/Pip)"
 apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools >/dev/null 2>&1
+# Adicionado python3-pip e python3-venv
+apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv >/dev/null 2>&1
 log_success
 
 log_step "Verificando Node/PM2"
@@ -82,7 +78,6 @@ wait_for_apt
 apt-get update -qq >/dev/null 2>&1
 apt-get install -y caddy >/dev/null 2>&1
 
-# Estrutura de Diretórios
 mkdir -p /etc/caddy/sites-enabled
 mkdir -p "$CF_PROFILE_DIR"
 
@@ -94,20 +89,16 @@ cat > /etc/caddy/Caddyfile <<'EOF'
 import sites-enabled/*
 EOF
 
-# Restaura Backups
-if [[ -d "$BACKUP_DIR" ]]; then
-    cp -r "$BACKUP_DIR/"* "$CF_PROFILE_DIR/" 2>/dev/null
-fi
+if [[ -d "$BACKUP_DIR" ]]; then cp -r "$BACKUP_DIR/"* "$CF_PROFILE_DIR/" 2>/dev/null; fi
 
 systemctl enable caddy >/dev/null 2>&1
 systemctl restart caddy >/dev/null 2>&1 || true
 log_success
 
-# --- CRIAÇÃO DO MENU ---
-log_step "Gerando Menu v11.0"
+# --- MENU SCRIPT ---
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v11.0
+# FYX-AUTOWEB v14.0
 set -u
 
 # VARIAVEIS
@@ -129,7 +120,7 @@ draw_header() {
   clear
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 11.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 14.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -169,113 +160,95 @@ detect_running_port() {
     if [[ -n "$port" ]]; then echo "$port"; else echo "0"; fi
 }
 
-# --- CLOUDFLARE MULTI-PROFILE ---
+# --- CLOUDFLARE ---
 
 manage_cf_profiles() {
     draw_header
-    echo -e "${Y}☁️  GERENCIAR PERFIS CLOUDFLARE${NC}"
-    echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
-    
-    echo -e "   1) Adicionar Novo Perfil"
+    echo -e "${Y}☁️  PERFIS CLOUDFLARE${NC}"
+    echo -e "   1) Adicionar Perfil"
     echo -e "   2) Listar Perfis"
     echo -e "   0) Voltar"
-    echo ""
-    read -rp "   Opção: " opt
+    echo ""; read -rp "   Opção: " opt
     
     if [[ "$opt" == "1" ]]; then
-        echo ""
-        read -rp "   Nome do Perfil (ex: ClienteA, Pessoal): " p_name
-        p_name=$(echo "$p_name" | tr -cd '[:alnum:]_-') # Limpa caracteres especiais
-        if [[ -z "$p_name" ]]; then echo "Nome inválido."; pause; return; fi
+        echo ""; read -rp "   Nome do Perfil (ex: Pessoal): " p_name
+        p_name=$(echo "$p_name" | tr -cd '[:alnum:]_-')
+        [[ -z "$p_name" ]] && return
         
-        echo -e "\n   ${C}Obtenha o TOKEN em: https://dash.cloudflare.com/profile/api-tokens${NC}"
+        echo -e "\n   ${C}Tutorial: https://dash.cloudflare.com/profile/api-tokens${NC}"
         read -rp "   API Token: " p_token
-        read -rp "   Zone ID (do domínio principal deste perfil): " p_zone
+        read -rp "   Zone ID: " p_zone
         
-        # Teste rápido
-        echo -ne "   Testando Token... "
-        local check=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" -H "Authorization: Bearer $p_token")
-        if echo "$check" | grep -q "active"; then
+        echo -ne "   Testando... "
+        if curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" -H "Authorization: Bearer $p_token" | grep -q "active"; then
             echo -e "${G}VÁLIDO!${NC}"
         else
-            echo -e "${R}INVÁLIDO (Mas vamos salvar mesmo assim).${NC}"
+            echo -e "${R}Token inválido ou erro de conexão.${NC}"
         fi
         
-        # Salva JSON simulado
         echo "CF_KEY=\"$p_token\"" > "$CF_PROFILE_DIR/$p_name.conf"
         echo "CF_ZONE=\"$p_zone\"" >> "$CF_PROFILE_DIR/$p_name.conf"
         chmod 600 "$CF_PROFILE_DIR/$p_name.conf"
-        echo -e "${G}✔ Perfil '$p_name' salvo!${NC}"
-        pause
+        echo -e "${G}✔ Salvo!${NC}"; pause
     elif [[ "$opt" == "2" ]]; then
-        echo ""
-        ls -1 "$CF_PROFILE_DIR" | sed 's/.conf//'
-        pause
+        echo ""; ls -1 "$CF_PROFILE_DIR" | sed 's/.conf//'; pause
     fi
 }
 
 select_and_create_dns() {
     local domain=$1
-    # Verifica se existem perfis
-    if [[ -z $(ls -A "$CF_PROFILE_DIR") ]]; then
-        return # Sem perfis, ignora silenciosamente
-    fi
+    if [[ -z $(ls -A "$CF_PROFILE_DIR") ]]; then return; fi
     
     echo -e "\n${Y}⚡ Deseja criar DNS na Cloudflare?${NC}"
-    echo "   0) Não criar DNS"
-    
-    # Lista perfis dinamicamente
-    local i=1
-    local profiles=()
+    echo "   0) Não criar"
+    local i=1; local profiles=()
     for f in "$CF_PROFILE_DIR"/*.conf; do
         local p_name=$(basename "$f" .conf)
         profiles+=("$p_name")
-        echo "   $i) Usar perfil: $p_name"
+        echo "   $i) Usar: $p_name"
         ((i++))
     done
-    
     read -rp "   Escolha: " p_choice
     
     if [[ "$p_choice" -gt 0 && "$p_choice" -le "${#profiles[@]}" ]]; then
         local selected="${profiles[$((p_choice-1))]}"
         source "$CF_PROFILE_DIR/$selected.conf"
         
-        local ip=$(curl -s https://api.ipify.org)
-        echo -ne "   Criando DNS A para $domain no perfil $selected... "
+        echo -e "\n   ${C}☁️  MODO DA NUVEM (PROXY):${NC}"
+        echo -e "   1) ${G}Laranja (Proxied)${NC}"
+        echo -e "   2) ${W}Cinza (DNS Only)${NC}"
+        read -rp "   Opção [1]: " proxy_opt
         
+        local is_proxied="true"
+        if [[ "$proxy_opt" == "2" ]]; then is_proxied="false"; fi
+        
+        local ip=$(curl -s https://api.ipify.org)
+        
+        echo -ne "   Criando DNS ($domain)... "
         curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records" \
-            -H "Authorization: Bearer $CF_KEY" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$ip\",\"ttl\":1,\"proxied\":true}" >/dev/null
-            
+            -H "Authorization: Bearer $CF_KEY" -H "Content-Type: application/json" \
+            --data "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$ip\",\"ttl\":1,\"proxied\":$is_proxied}" >/dev/null
         echo -e "${G}OK${NC}"
         
-        # Cria WWW também
-        echo -ne "   Criando DNS A para www.$domain... "
+        echo -ne "   Criando DNS (www.$domain)... "
         curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records" \
-            -H "Authorization: Bearer $CF_KEY" \
-            -H "Content-Type: application/json" \
-            --data "{\"type\":\"A\",\"name\":\"www.$domain\",\"content\":\"$ip\",\"ttl\":1,\"proxied\":true}" >/dev/null
+            -H "Authorization: Bearer $CF_KEY" -H "Content-Type: application/json" \
+            --data "{\"type\":\"A\",\"name\":\"www.$domain\",\"content\":\"$ip\",\"ttl\":1,\"proxied\":$is_proxied}" >/dev/null
         echo -e "${G}OK${NC}"
     fi
 }
 
 write_caddy_config() {
     local domain=$1; local ssl=$2; local port=$3
-    local tls_line=""; local tls_redir=""
+    local tls_line=""
     
-    # PROTEÇÃO CONTRA CRASH DE SSL
     if [[ "$ssl" == "2" ]]; then
         if [[ ! -f "$CF_CERT" || ! -f "$CF_KEY" ]]; then
-             echo -e "\n${R}❌ ERRO FATAL: Certificados Cloudflare não encontrados!${NC}"
-             echo -e "   Esperado em: $CF_CERT e $CF_KEY"
-             echo -e "   Use a opção 'Ferramentas' -> 'Editar Certificados' para colar."
-             echo -e "   ${Y}Alternando para Auto TLS (Let's Encrypt) para evitar crash.${NC}"
-             ssl="1"
-             read -rp "   Pressione ENTER para aceitar Auto TLS..." dump
+             echo -e "\n${R}❌ ERRO: Certificados manuais não encontrados!${NC}"
+             echo -e "${Y}   Usando Auto TLS para não falhar.${NC}"
+             ssl="1"; read -rp "   Enter para continuar..." d
         else
              tls_line="tls $CF_CERT $CF_KEY"
-             tls_redir=$tls_line
         fi
     fi
     
@@ -285,18 +258,22 @@ write_caddy_config() {
 
     cat > "$SITES_DIR/$domain" <<EOB
 # Config: $domain
-www.$domain {
-    $tls_redir
-    redir https://$domain{uri}
-}
-$domain {
+www.$domain, $domain {
     $tls_line
-    root * /var/www/$domain
-    encode gzip
-    $block
+    
+    @www host www.$domain
+    handle @www {
+        redir https://$domain{uri}
+    }
+
+    handle {
+        root * /var/www/$domain
+        encode gzip
+        $block
+    }
 }
 EOB
-    echo -e "${G}✔ Configuração salva: $SITES_DIR/$domain${NC}"
+    echo -e "${G}✔ Configuração salva.${NC}"
 }
 
 # --- ACTIONS ---
@@ -314,25 +291,35 @@ rehost_site() {
     if [[ "$num" -gt 0 && "$num" -le "${#dirs[@]}" ]]; then
         domain="${dirs[$((num-1))]}"
         
-        # PROTEÇÃO DE SOBRESCRITA
+        # --- VERIFICAÇÃO PYTHON ---
+        if [[ -f "/var/www/$domain/requirements.txt" ]]; then
+             echo -e "\n${C}🐍 PYTHON DETECTADO (requirements.txt)${NC}"
+             read -rp "   Deseja instalar as dependências agora? (s/N): " inst_py
+             if [[ "$inst_py" =~ ^[sS]$ ]]; then
+                 echo -e "   ${Y}Executando pip install...${NC}"
+                 pip3 install -r "/var/www/$domain/requirements.txt"
+                 echo -e "   ${G}✔ Dependências instaladas.${NC}"
+             fi
+        fi
+
         if [[ -f "$SITES_DIR/$domain" ]]; then
-             echo -e "\n${R}⚠️  ATENÇÃO: O site $domain já está ativo!${NC}"
-             read -rp "Deseja realmente sobrescrever a configuração? (s/N): " confirm
+             echo -e "\n${R}⚠️  ATENÇÃO: $domain já está ativo!${NC}"
+             read -rp "Sobrescrever? (s/N): " confirm
              if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then return; fi
         fi
 
-        echo -e "\n${Y}Analisando $domain...${NC}"
+        echo -e "\n${Y}Analisando...${NC}"
         local detected_port=$(detect_running_port "$domain")
         local port="0"
         
         if [[ "$detected_port" != "0" ]]; then
-            echo -e "${G}⚡ DETECTADO!${NC} App rodando na porta ${C}$detected_port${NC}."
+            echo -e "${G}⚡ DETECTADO!${NC} App na porta ${C}$detected_port${NC}."
             port="$detected_port"
             write_caddy_config "$domain" "1" "$port"
             reload_caddy; pause; return
         fi
         
-        echo -e "${Y}⚠ App não detectado automaticamente.${NC}"
+        echo -e "${Y}⚠ App não detectado.${NC}"
         read -rp "É um App PM2? (s/N): " is_app
         if [[ "$is_app" =~ ^[sS]$ ]]; then
              read -rp "1) Manual  2) Gerar Porta: " p_opt
@@ -345,7 +332,7 @@ rehost_site() {
         fi
         
         echo ""
-        echo -e "🔐 SSL: 1) Auto (Let's Encrypt)  2) Cloudflare Origin Cert"
+        echo -e "🔐 SSL: 1) Auto (Let's Encrypt)  2) Cloudflare Manual"
         read -rp "Opção [1]: " ssl; ssl=${ssl:-1}
         
         write_caddy_config "$domain" "$ssl" "$port"
@@ -404,19 +391,42 @@ sync_pm2_sites() {
 list_sites() {
   draw_header; echo -e "${Y}📋 SITES ATIVOS${NC}"; echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
   if [[ -z $(ls -A "$SITES_DIR") ]]; then echo "Vazio."; else
+      # Cria arrays para mapeamento
+      local site_files=($(ls "$SITES_DIR"))
       local i=1
-      for site_file in "$SITES_DIR"/*; do
-          local d=$(basename "$site_file")
+      
+      for site_file in "${site_files[@]}"; do
+          local d="$site_file"
+          local full_path="$SITES_DIR/$d"
           local type="Estático"
-          if grep -q "reverse_proxy" "$site_file"; then
-             local p=$(grep "reverse_proxy" "$site_file" | awk -F: '{print $2}')
+          if grep -q "reverse_proxy" "$full_path"; then
+             local p=$(grep "reverse_proxy" "$full_path" | awk -F: '{print $2}')
              type="App Porta: $p"
           fi
           printf "   ${C}[%02d]${NC} %-30s ${W}%s${NC}\n" "$i" "$d" "$type"
           ((i++))
       done
+      
+      echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+      echo -e "   [0] Voltar"
+      read -rp "   Digite o número para ABRIR O TERMINAL na pasta (ou 0): " opt
+      
+      if [[ "$opt" -gt 0 && "$opt" -le "${#site_files[@]}" ]]; then
+          local selected_domain="${site_files[$((opt-1))]}"
+          local target_dir="/var/www/$selected_domain"
+          
+          if [[ -d "$target_dir" ]]; then
+              echo -e "\n${Y}Entrando em: $target_dir${NC}"
+              echo -e "${C}Digite 'exit' para voltar ao menu.${NC}"
+              echo ""
+              # Inicia um sub-shell no diretório
+              (cd "$target_dir" && bash)
+          else
+              echo -e "${R}Pasta $target_dir não encontrada.${NC}"
+              pause
+          fi
+      fi
   fi
-  pause
 }
 
 remove_site() {
@@ -452,7 +462,7 @@ system_tools() {
 
 while true; do
   draw_header
-  draw_menu_item "1" "Listar Sites"
+  draw_menu_item "1" "Listar Sites / Gerenciar Arquivos"
   draw_menu_item "2" "Novo Site"
   draw_menu_item "3" "Re-hospedar (Auto-Detect)"
   draw_menu_item "4" "Sync Apps PM2"
@@ -467,5 +477,5 @@ done
 EOF
 chmod +x /usr/local/bin/menu-site
 log_success
-echo -e "${GREEN}✅ INSTALAÇÃO 11.0 COMPLETA! Digite: menu-site${NC}"
+echo -e "${GREEN}✅ INSTALAÇÃO 14.0 COMPLETA! Digite: menu-site${NC}"
 menu-site
