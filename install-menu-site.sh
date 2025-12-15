@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 15.0 - Python VENV Fix (PEP 668 Compliant)
+# Versão 16.0 - Multi-PHP Manager & Cloudflare Rehost Fix
 
 # 1. Configurações de Segurança
 export DEBIAN_FRONTEND=noninteractive
@@ -22,7 +22,7 @@ UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/h
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 15.0 ⚡             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 16.0 ⚡             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
@@ -51,10 +51,17 @@ wait_for_apt
 systemctl stop nginx >/dev/null 2>&1 || true
 rm -f /etc/apt/sources.list.d/caddy*
 
-log_step "Instalando dependências (Python venv adicionado)"
+log_step "Instalando dependências base"
 apt-get update -qq >/dev/null 2>&1
-# Adicionado python3-full e python3-venv explicitamente
-apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full >/dev/null 2>&1
+# Adiciona repositório PHP (Ondrej) para garantir acesso a todas versões
+apt-get install -y -qq software-properties-common >/dev/null 2>&1
+if ! grep -q "ondrej/php" /etc/apt/sources.list.d/*; then
+    add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1
+fi
+apt-get update -qq >/dev/null 2>&1
+
+# Instala pacotes essenciais
+apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full zip unzip git >/dev/null 2>&1
 log_success
 
 log_step "Verificando Node/PM2"
@@ -69,8 +76,9 @@ env PATH=$PATH:/usr/bin pm2 startup systemd -u root --hp /root >/dev/null 2>&1 |
 pm2 save --force >/dev/null 2>&1
 log_success
 
-log_step "Instalando Caddy"
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+log_step "Instalando Caddy (Correção GPG)"
+# ADICIONADO --yes PARA EVITAR PERGUNTA DE OVERWRITE
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 cat > /etc/apt/sources.list.d/caddy-stable.list <<EOF
 deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
 EOF
@@ -98,7 +106,7 @@ log_success
 # --- MENU SCRIPT ---
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v15.0
+# FYX-AUTOWEB v16.0
 set -u
 
 # VARIAVEIS
@@ -120,7 +128,7 @@ draw_header() {
   clear
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 15.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 16.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -158,6 +166,27 @@ detect_running_port() {
     if [[ -z "$pid" || "$pid" == "null" ]]; then echo "0"; return; fi
     local port=$(netstat -tulpn 2>/dev/null | grep " $pid/" | awk '{print $4}' | awk -F: '{print $NF}' | head -n1)
     if [[ -n "$port" ]]; then echo "$port"; else echo "0"; fi
+}
+
+# --- PHP MANAGER ---
+
+ensure_php_installed() {
+    local ver=$1
+    # Verifica se o fpm está instalado
+    if ! dpkg -l | grep -q "php$ver-fpm"; then
+        echo -e "\n${Y}Instalando PHP $ver e extensões comuns...${NC}"
+        apt-get update -qq
+        apt-get install -y "php$ver-fpm" "php$ver-mysql" "php$ver-curl" "php$ver-gd" "php$ver-mbstring" "php$ver-xml" "php$ver-zip"
+        echo -e "${G}✔ PHP $ver instalado!${NC}"
+    fi
+    # Garante que o serviço está rodando
+    systemctl start "php$ver-fpm"
+    systemctl enable "php$ver-fpm" >/dev/null 2>&1
+}
+
+get_php_socket() {
+    local ver=$1
+    echo "unix//run/php/php$ver-fpm.sock"
 }
 
 # --- CLOUDFLARE ---
@@ -239,7 +268,7 @@ select_and_create_dns() {
 }
 
 write_caddy_config() {
-    local domain=$1; local ssl=$2; local port=$3
+    local domain=$1; local ssl=$2; local type=$3; local extra=$4
     local tls_line=""
     
     if [[ "$ssl" == "2" ]]; then
@@ -253,8 +282,19 @@ write_caddy_config() {
     fi
     
     [[ "$ssl" == "3" ]] && domain="http://$domain"
-    local block="file_server"
-    [[ "$port" != "0" ]] && block="reverse_proxy localhost:$port"
+    
+    local block=""
+    
+    if [[ "$type" == "static" ]]; then
+        block="file_server"
+    elif [[ "$type" == "proxy" ]]; then
+        block="reverse_proxy localhost:$extra"
+    elif [[ "$type" == "php" ]]; then
+        # Extra contém a versão do PHP (ex: 8.2)
+        local socket=$(get_php_socket "$extra")
+        block="php_fastcgi $socket
+        file_server"
+    fi
 
     cat > "$SITES_DIR/$domain" <<EOB
 # Config: $domain
@@ -292,61 +332,80 @@ rehost_site() {
         domain="${dirs[$((num-1))]}"
         local site_path="/var/www/$domain"
         
-        # --- VERIFICAÇÃO PYTHON VENV (CORREÇÃO PEP 668) ---
+        # --- PYTHON VENV ---
         if [[ -f "$site_path/requirements.txt" ]]; then
              echo -e "\n${C}🐍 PYTHON DETECTADO${NC}"
              read -rp "   Criar Ambiente Virtual (venv) e instalar dependências? (s/N): " inst_py
              if [[ "$inst_py" =~ ^[sS]$ ]]; then
                  echo -e "   ${Y}Criando venv isolado...${NC}"
-                 # Cria o venv
                  python3 -m venv "$site_path/venv"
-                 
-                 echo -e "   ${Y}Instalando requirements (pip)...${NC}"
-                 # Usa o pip do venv diretamente
+                 echo -e "   ${Y}Instalando requirements...${NC}"
                  if "$site_path/venv/bin/pip" install -r "$site_path/requirements.txt"; then
-                     echo -e "   ${G}✔ Dependências instaladas com sucesso!${NC}"
-                     echo -e "   ${Y}ℹ️  Para rodar no PM2, use este interpretador:${NC}"
-                     echo -e "      ${W}$site_path/venv/bin/python${NC}"
-                 else
-                     echo -e "   ${R}❌ Erro na instalação das dependências.${NC}"
+                     echo -e "   ${G}✔ Instalado.${NC}"
+                     echo -e "   ${Y}Interp: $site_path/venv/bin/python${NC}"
                  fi
              fi
         fi
 
+        # --- CLOUDFLARE DNS CHECK NO REHOST ---
+        select_and_create_dns "$domain"
+
         if [[ -f "$SITES_DIR/$domain" ]]; then
              echo -e "\n${R}⚠️  ATENÇÃO: $domain já está ativo!${NC}"
-             read -rp "Sobrescrever configuração do Caddy? (s/N): " confirm
+             read -rp "Sobrescrever configuração? (s/N): " confirm
              if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then return; fi
         fi
 
-        echo -e "\n${Y}Analisando...${NC}"
+        echo -e "\n${Y}Configurando aplicação...${NC}"
+        
+        # Detecção de App
         local detected_port=$(detect_running_port "$domain")
         local port="0"
-        
+        local site_type="static"
+        local extra_data=""
+
         if [[ "$detected_port" != "0" ]]; then
             echo -e "${G}⚡ DETECTADO!${NC} App na porta ${C}$detected_port${NC}."
             port="$detected_port"
-            write_caddy_config "$domain" "1" "$port"
-            reload_caddy; pause; return
-        fi
-        
-        echo -e "${Y}⚠ App não detectado.${NC}"
-        read -rp "É um App PM2? (s/N): " is_app
-        if [[ "$is_app" =~ ^[sS]$ ]]; then
-             read -rp "1) Manual  2) Gerar Porta: " p_opt
-             if [[ "$p_opt" == "2" ]]; then
-                 port=$(get_next_port)
-                 echo -e "${Y}⚠ Use a porta $port no app!${NC}"; read -r
-             else
-                 read -rp "Porta interna: " port
-             fi
+            site_type="proxy"
+            extra_data="$port"
+        else
+            echo -e "Selecione o tipo do site:"
+            echo -e "   1) Estático (HTML)"
+            echo -e "   2) PHP (WordPress/Laravel)"
+            echo -e "   3) Aplicação Node/PM2/Python"
+            read -rp "   Opção [1]: " type_opt
+            
+            case $type_opt in
+                2)
+                    site_type="php"
+                    echo -e "\n   ${C}Escolha a versão do PHP:${NC}"
+                    echo -e "   1) PHP 8.3 (Mais recente)"
+                    echo -e "   2) PHP 8.2 (Estável)"
+                    echo -e "   3) PHP 8.1"
+                    echo -e "   4) PHP 7.4 (Legado)"
+                    read -rp "   Versão [2]: " php_v_opt
+                    case $php_v_opt in
+                        1) ver="8.3" ;; 3) ver="8.1" ;; 4) ver="7.4" ;; *) ver="8.2" ;;
+                    esac
+                    ensure_php_installed "$ver"
+                    extra_data="$ver"
+                    ;;
+                3)
+                    site_type="proxy"
+                    read -rp "   Porta interna do App: " extra_data
+                    ;;
+                *)
+                    site_type="static"
+                    ;;
+            esac
         fi
         
         echo ""
-        echo -e "🔐 SSL: 1) Auto (Let's Encrypt)  2) Cloudflare Manual"
+        echo -e "🔐 SSL: 1) Auto  2) Cloudflare Manual"
         read -rp "Opção [1]: " ssl; ssl=${ssl:-1}
         
-        write_caddy_config "$domain" "$ssl" "$port"
+        write_caddy_config "$domain" "$ssl" "$site_type" "$extra_data"
         reload_caddy
     fi
     pause
@@ -360,20 +419,44 @@ add_site() {
   
   select_and_create_dns "$d"
   
-  echo -e "📦 TIPO: 1) Estático  2) App PM2"; read -rp "Opção: " t; t=${t:-1}
   mkdir -p "/var/www/$d"
-  p="0"
-  if [[ "$t" == "2" ]]; then
-    p=$(get_next_port)
-    cat > "/var/www/$d/server.js" <<JS
+  
+  echo -e "\n📦 TIPO DE SITE:"
+  echo -e "   1) Estático (HTML)"
+  echo -e "   2) PHP (WordPress/Laravel)"
+  echo -e "   3) App PM2 (Node.js)"
+  read -rp "   Opção [1]: " t; t=${t:-1}
+  
+  local site_type="static"
+  local extra_data=""
+  
+  case $t in
+      2)
+          site_type="php"
+          echo -e "\n   ${C}Versão PHP:${NC} 1) 8.3  2) 8.2  3) 8.1  4) 7.4"
+          read -rp "   Escolha [2]: " pv
+          case $pv in 1) ver="8.3";; 3) ver="8.1";; 4) ver="7.4";; *) ver="8.2";; esac
+          ensure_php_installed "$ver"
+          extra_data="$ver"
+          if [[ ! -f "/var/www/$d/index.php" ]]; then echo "<?php phpinfo(); ?>" > "/var/www/$d/index.php"; fi
+          ;;
+      3)
+          site_type="proxy"
+          local p=$(get_next_port)
+          extra_data="$p"
+          cat > "/var/www/$d/server.js" <<JS
 const http = require('http');
 http.createServer((r,s)=>{s.writeHead(200);s.end('<h1>$d : $p</h1>')}).listen($p);
 JS
-    pm2 start "/var/www/$d/server.js" --name "$d" >/dev/null; pm2 save >/dev/null
-  else
-    [[ ! -f "/var/www/$d/index.html" ]] && echo "<h1>$d</h1>" > "/var/www/$d/index.html"
-  fi
-  write_caddy_config "$d" "1" "$p"
+          pm2 start "/var/www/$d/server.js" --name "$d" >/dev/null; pm2 save >/dev/null
+          ;;
+      *)
+          site_type="static"
+          if [[ ! -f "/var/www/$d/index.html" ]]; then echo "<h1>$d</h1>" > "/var/www/$d/index.html"; fi
+          ;;
+  esac
+  
+  write_caddy_config "$d" "1" "$site_type" "$extra_data"
   reload_caddy
   pause
 }
@@ -391,7 +474,7 @@ sync_pm2_sites() {
              read -rp "   Domínio [$app]: " d; d=${d:-$app}
              if [[ "$p" == "0" ]]; then read -rp "   Porta: " p; fi
              select_and_create_dns "$d"
-             write_caddy_config "$d" "1" "$p"
+             write_caddy_config "$d" "1" "proxy" "$p"
              mkdir -p "/var/www/$d"
         fi
     done
@@ -402,10 +485,8 @@ sync_pm2_sites() {
 list_sites() {
   draw_header; echo -e "${Y}📋 SITES ATIVOS${NC}"; echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
   if [[ -z $(ls -A "$SITES_DIR") ]]; then echo "Vazio."; else
-      # Cria arrays para mapeamento
       local site_files=($(ls "$SITES_DIR"))
       local i=1
-      
       for site_file in "${site_files[@]}"; do
           local d="$site_file"
           local full_path="$SITES_DIR/$d"
@@ -413,28 +494,22 @@ list_sites() {
           if grep -q "reverse_proxy" "$full_path"; then
              local p=$(grep "reverse_proxy" "$full_path" | awk -F: '{print $2}')
              type="App Porta: $p"
+          elif grep -q "php_fastcgi" "$full_path"; then
+             type="PHP"
           fi
           printf "   ${C}[%02d]${NC} %-30s ${W}%s${NC}\n" "$i" "$d" "$type"
           ((i++))
       done
-      
       echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
       echo -e "   [0] Voltar"
       read -rp "   Digite o número para ABRIR O TERMINAL na pasta (ou 0): " opt
-      
       if [[ "$opt" -gt 0 && "$opt" -le "${#site_files[@]}" ]]; then
           local selected_domain="${site_files[$((opt-1))]}"
           local target_dir="/var/www/$selected_domain"
-          
           if [[ -d "$target_dir" ]]; then
               echo -e "\n${Y}Entrando em: $target_dir${NC}"
-              echo -e "${C}Digite 'exit' para voltar ao menu.${NC}"
-              echo ""
-              # Inicia um sub-shell no diretório
+              echo -e "${C}Digite 'exit' para voltar ao menu.${NC}\n"
               (cd "$target_dir" && bash)
-          else
-              echo -e "${R}Pasta $target_dir não encontrada.${NC}"
-              pause
           fi
       fi
   fi
@@ -488,5 +563,5 @@ done
 EOF
 chmod +x /usr/local/bin/menu-site
 log_success
-echo -e "${GREEN}✅ INSTALAÇÃO 15.0 COMPLETA! Digite: menu-site${NC}"
+echo -e "${GREEN}✅ INSTALAÇÃO 16.0 COMPLETA! Digite: menu-site${NC}"
 menu-site
