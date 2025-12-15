@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 17.0 - Anti-Freeze & Verbose Mode
+# Versão 18.0 - Network Fix (IPv4 Force & Timeout Prevention)
 
-# 1. Configurações de Segurança e Não-Interatividade
+# 1. Configurações de Segurança e Ambiente
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C.UTF-8
 set -u
 
-# Opções do APT para não perguntar nada (Força Sim para tudo e mantêm configs antigas)
+# 2. CONFIGURAÇÕES DO APT (ANTI-TRAVAMENTO)
+# ForceIPv4: Evita travamento em "Waiting for headers"
+# Retries: Tenta de novo se falhar
+# Timeout: Não espera eternamente
 APT_OPTS="-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+APT_NET_OPTS="-o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=10"
 
-# 2. DEFINIÇÃO DE CORES
+# 3. DEFINIÇÃO DE CORES
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -26,27 +30,25 @@ UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/h
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 17.0 ⚡               ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 18.0 ⚡             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
 log_step() { echo -ne "${BLUE}[INFO]${NC} $1... "; }
 log_success() { echo -e "${GREEN}✅ SUCESSO${NC}"; }
 
-# Função de espera do APT melhorada
-wait_for_apt() {
-  local count=0
-  while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo -ne "${YELLOW}⏳ O apt está ocupado por outro processo... aguardando ($count s)${NC}\r"
-    sleep 5
-    count=$((count+5))
-    # Se demorar mais de 60s, tenta matar processos travados
-    if [ $count -gt 60 ]; then
-        echo -e "\n${RED}Desbloqueando apt forçadamente...${NC}"
+# Função para destravar APT preso
+fix_apt_lock() {
+    if fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
+        echo -e "${YELLOW}Detectado APT travado. Tentando liberar...${NC}"
         killall apt apt-get 2>/dev/null
-        rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock*
+        sleep 2
+        rm -f /var/lib/apt/lists/lock
+        rm -f /var/cache/apt/archives/lock
+        rm -f /var/lib/dpkg/lock*
+        dpkg --configure -a >/dev/null 2>&1
+        echo -e "${GREEN}APT liberado.${NC}"
     fi
-  done
 }
 
 if [[ $EUID -ne 0 ]]; then echo -e "${RED}Erro: Execute como root.${NC}"; exit 1; fi
@@ -59,40 +61,38 @@ BACKUP_DIR="/tmp/cf_profiles_backup"
 [[ -d "$CF_PROFILE_DIR" ]] && cp -r "$CF_PROFILE_DIR" "$BACKUP_DIR"
 echo ""
 
-log_step "Preparando sistema"
-wait_for_apt
+log_step "Preparando sistema e rede"
+fix_apt_lock
 systemctl stop nginx >/dev/null 2>&1 || true
 rm -f /etc/apt/sources.list.d/caddy*
 
-# --- MODO VERBOSO ATIVADO PARA DEPENDÊNCIAS ---
-echo -e "${CYAN}--- INICIANDO INSTALAÇÃO DE PACOTES (MODO VERBOSO) ---${NC}"
-echo -e "${YELLOW}Se demorar, você verá o motivo abaixo:${NC}"
+# --- INSTALAÇÃO COM PROTEÇÃO DE REDE ---
+echo -e "${CYAN}--- ATUALIZANDO SISTEMA (Modo Seguro IPv4) ---${NC}"
 
-wait_for_apt
-apt-get update
+# Atualiza lista de pacotes forçando IPv4
+apt-get update $APT_NET_OPTS
 
-echo -e "${BLUE}> Instalando gerenciador de repositórios...${NC}"
-apt-get install $APT_OPTS software-properties-common
+echo -e "${BLUE}> Instalando dependências básicas...${NC}"
+apt-get install $APT_OPTS $APT_NET_OPTS software-properties-common
 
-echo -e "${BLUE}> Adicionando Repositório PHP (Ondrej)...${NC}"
-# Adiciona PPA sem travar
+echo -e "${BLUE}> Adicionando Repositório PHP...${NC}"
 if ! grep -q "ondrej/php" /etc/apt/sources.list.d/*; then
     add-apt-repository -y ppa:ondrej/php
+    apt-get update $APT_NET_OPTS
 fi
-apt-get update
 
-echo -e "${BLUE}> Instalando Pacotes Essenciais (PHP, Ferramentas)...${NC}"
-# Instalação explícita sem esconder output
-apt-get install $APT_OPTS apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full zip unzip git
+echo -e "${BLUE}> Instalando Pacotes (Isso pode levar um tempo)...${NC}"
+# Instala tudo de uma vez com as flags anti-travamento
+PACKAGES="apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full zip unzip git"
+apt-get install $APT_OPTS $APT_NET_OPTS $PACKAGES
 
-echo -e "${CYAN}--- DEPENDÊNCIAS CONCLUÍDAS ---${NC}"
 log_success
 
 log_step "Verificando Node/PM2"
 if ! command -v node &> /dev/null; then 
-    echo "Instalando Node.js..."
+    echo "Baixando Node.js..."
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-    apt-get install $APT_OPTS nodejs
+    apt-get install $APT_OPTS $APT_NET_OPTS nodejs
 fi
 npm install -g pm2 http-server
 pm2 update
@@ -100,16 +100,14 @@ env PATH=$PATH:/usr/bin pm2 startup systemd -u root --hp /root >/dev/null 2>&1 |
 pm2 save --force
 log_success
 
-log_step "Instalando Caddy (Keyring Fix)"
-# Garante que a pasta existe
+log_step "Instalando Caddy"
 mkdir -p /usr/share/keyrings
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 cat > /etc/apt/sources.list.d/caddy-stable.list <<EOF
 deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
 EOF
-wait_for_apt
-apt-get update
-apt-get install $APT_OPTS caddy
+apt-get update $APT_NET_OPTS
+apt-get install $APT_OPTS $APT_NET_OPTS caddy
 
 mkdir -p /etc/caddy/sites-enabled
 mkdir -p "$CF_PROFILE_DIR"
@@ -131,7 +129,7 @@ log_success
 # --- MENU SCRIPT ---
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v17.0
+# FYX-AUTOWEB v18.0
 set -u
 
 # VARIAVEIS
@@ -153,7 +151,7 @@ draw_header() {
   clear
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 17.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 18.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -199,10 +197,9 @@ ensure_php_installed() {
     local ver=$1
     if ! dpkg -l | grep -q "php$ver-fpm"; then
         echo -e "\n${Y}Instalando PHP $ver e extensões...${NC}"
-        # Força instalação sem perguntas
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq
-        apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "php$ver-fpm" "php$ver-mysql" "php$ver-curl" "php$ver-gd" "php$ver-mbstring" "php$ver-xml" "php$ver-zip"
+        apt-get update -o Acquire::ForceIPv4=true -qq
+        apt-get install -y -o Acquire::ForceIPv4=true -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "php$ver-fpm" "php$ver-mysql" "php$ver-curl" "php$ver-gd" "php$ver-mbstring" "php$ver-xml" "php$ver-zip"
         echo -e "${G}✔ PHP $ver instalado!${NC}"
     fi
     systemctl start "php$ver-fpm"
@@ -355,7 +352,6 @@ rehost_site() {
         domain="${dirs[$((num-1))]}"
         local site_path="/var/www/$domain"
         
-        # PYTHON VENV CHECK
         if [[ -f "$site_path/requirements.txt" ]]; then
              echo -e "\n${C}🐍 PYTHON DETECTADO${NC}"
              read -rp "   Criar Ambiente Virtual (venv) e instalar dependências? (s/N): " inst_py
@@ -370,7 +366,6 @@ rehost_site() {
              fi
         fi
 
-        # CLOUDFLARE DNS CHECK
         select_and_create_dns "$domain"
 
         if [[ -f "$SITES_DIR/$domain" ]]; then
@@ -581,5 +576,5 @@ done
 EOF
 chmod +x /usr/local/bin/menu-site
 log_success
-echo -e "${GREEN}✅ INSTALAÇÃO 17.0 COMPLETA! Digite: menu-site${NC}"
+echo -e "${GREEN}✅ INSTALAÇÃO 18.0 COMPLETA! Digite: menu-site${NC}"
 menu-site
