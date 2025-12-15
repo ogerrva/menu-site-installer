@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-menu-site.sh — FYX-AUTOWEB Installer
-# Versão 14.0 - Python Support & Folder Access
+# Versão 15.0 - Python VENV Fix (PEP 668 Compliant)
 
 # 1. Configurações de Segurança
 export DEBIAN_FRONTEND=noninteractive
@@ -22,7 +22,7 @@ UPDATE_URL="https://raw.githubusercontent.com/ogerrva/menu-site-installer/refs/h
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 14.0 ⚡             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}             ⚡ FYX-AUTOWEB SYSTEM 15.0 ⚡             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
@@ -51,10 +51,10 @@ wait_for_apt
 systemctl stop nginx >/dev/null 2>&1 || true
 rm -f /etc/apt/sources.list.d/caddy*
 
-log_step "Instalando dependências (incluindo Python/Pip)"
+log_step "Instalando dependências (Python venv adicionado)"
 apt-get update -qq >/dev/null 2>&1
-# Adicionado python3-pip e python3-venv
-apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv >/dev/null 2>&1
+# Adicionado python3-full e python3-venv explicitamente
+apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq net-tools python3-pip python3-venv python3-full >/dev/null 2>&1
 log_success
 
 log_step "Verificando Node/PM2"
@@ -98,7 +98,7 @@ log_success
 # --- MENU SCRIPT ---
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# FYX-AUTOWEB v14.0
+# FYX-AUTOWEB v15.0
 set -u
 
 # VARIAVEIS
@@ -120,7 +120,7 @@ draw_header() {
   clear
   local count=$(ls -1 "$SITES_DIR" 2>/dev/null | wc -l)
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 14.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}             ${C}⚡ FYX-AUTOWEB SYSTEM 15.0 ⚡${NC}             ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
   echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$count${NC}  |  PM2: ${G}$(pm2 list | grep online | wc -l)${NC}   ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
@@ -290,21 +290,32 @@ rehost_site() {
     echo ""; read -rp "Número: " num
     if [[ "$num" -gt 0 && "$num" -le "${#dirs[@]}" ]]; then
         domain="${dirs[$((num-1))]}"
+        local site_path="/var/www/$domain"
         
-        # --- VERIFICAÇÃO PYTHON ---
-        if [[ -f "/var/www/$domain/requirements.txt" ]]; then
-             echo -e "\n${C}🐍 PYTHON DETECTADO (requirements.txt)${NC}"
-             read -rp "   Deseja instalar as dependências agora? (s/N): " inst_py
+        # --- VERIFICAÇÃO PYTHON VENV (CORREÇÃO PEP 668) ---
+        if [[ -f "$site_path/requirements.txt" ]]; then
+             echo -e "\n${C}🐍 PYTHON DETECTADO${NC}"
+             read -rp "   Criar Ambiente Virtual (venv) e instalar dependências? (s/N): " inst_py
              if [[ "$inst_py" =~ ^[sS]$ ]]; then
-                 echo -e "   ${Y}Executando pip install...${NC}"
-                 pip3 install -r "/var/www/$domain/requirements.txt"
-                 echo -e "   ${G}✔ Dependências instaladas.${NC}"
+                 echo -e "   ${Y}Criando venv isolado...${NC}"
+                 # Cria o venv
+                 python3 -m venv "$site_path/venv"
+                 
+                 echo -e "   ${Y}Instalando requirements (pip)...${NC}"
+                 # Usa o pip do venv diretamente
+                 if "$site_path/venv/bin/pip" install -r "$site_path/requirements.txt"; then
+                     echo -e "   ${G}✔ Dependências instaladas com sucesso!${NC}"
+                     echo -e "   ${Y}ℹ️  Para rodar no PM2, use este interpretador:${NC}"
+                     echo -e "      ${W}$site_path/venv/bin/python${NC}"
+                 else
+                     echo -e "   ${R}❌ Erro na instalação das dependências.${NC}"
+                 fi
              fi
         fi
 
         if [[ -f "$SITES_DIR/$domain" ]]; then
              echo -e "\n${R}⚠️  ATENÇÃO: $domain já está ativo!${NC}"
-             read -rp "Sobrescrever? (s/N): " confirm
+             read -rp "Sobrescrever configuração do Caddy? (s/N): " confirm
              if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then return; fi
         fi
 
@@ -477,5 +488,5 @@ done
 EOF
 chmod +x /usr/local/bin/menu-site
 log_success
-echo -e "${GREEN}✅ INSTALAÇÃO 14.0 COMPLETA! Digite: menu-site${NC}"
+echo -e "${GREEN}✅ INSTALAÇÃO 15.0 COMPLETA! Digite: menu-site${NC}"
 menu-site
