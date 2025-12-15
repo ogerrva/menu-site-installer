@@ -1,461 +1,401 @@
 #!/usr/bin/env bash
-# install-menu-site.sh — Instala Caddy, PM2, Node.js e configura menu-site completo
-# Otimizado para não travar em perguntas do sistema (Non-Interactive)
+# install-menu-site.sh — Installer Profissional By OGERRVA
+# Versão 3.0 - Interface UI Melhorada
 
-# Define que a instalação não deve fazer perguntas (evita travamento em 0%)
 export DEBIAN_FRONTEND=noninteractive
+set -u
 
-set -euo pipefail
-
-# Cores para o terminal
-RED='\033[0;31m'
-GREEN='\033[0;32m'
+# --- CORES E ESTILOS ---
+RED='\033[1;31m'
+GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+CYAN='\033[1;36m'
+WHITE='\033[1;37m'
 NC='\033[0m'
+BG_BLUE='\033[44m'
 
-# --- FUNÇÃO: wait_for_apt ---
-# Descrição: Verifica se o sistema está rodando atualizações automáticas (apt lock)
-# e espera elas terminarem antes de continuar, para não dar erro de "Could not get lock".
+# --- FUNÇÕES DE LOG VISUAL ---
+log_header() {
+  clear
+  echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${BLUE}║ ${CYAN}           INSTALADOR DE AMBIENTE WEB - OGERRVA           ${BLUE}║${NC}"
+  echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+}
+
+log_step() {
+  echo -ne "${BLUE}[INFO]${NC} $1... "
+}
+
+log_success() {
+  echo -e "${GREEN}✅ SUCESSO${NC}"
+}
+
+log_error() {
+  echo -e "${RED}❌ ERRO${NC}"
+  echo -e "${RED}Detalhes: $1${NC}"
+  exit 1
+}
+
 wait_for_apt() {
   while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo -e "${YELLOW}Aguardando o sistema liberar o apt (atualizações em segundo plano)...${NC}"
-    sleep 5
+    echo -ne "${YELLOW}⏳ Aguardando apt... ${NC}\r"
+    sleep 3
   done
 }
 
 if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}⚠️ Execute este script como root (sudo).${NC}" >&2
+  echo -e "${RED}Erro: Execute como root.${NC}"
   exit 1
 fi
 
-CERT_DIR="/etc/caddy"
+# --- INÍCIO DA INSTALAÇÃO ---
+log_header
 
-# --- 1. Limpeza e Preparação ---
-echo -e "${YELLOW}==> Preparando sistema...${NC}"
+log_step "Preparando e limpando o sistema"
 wait_for_apt
-# Para serviços antigos para evitar conflito
 systemctl stop nginx caddy >/dev/null 2>&1 || true
 pkill -9 caddy >/dev/null 2>&1 || true
-
-# Remove instalações anteriores conflitantes
 apt-get remove --purge -y nginx* caddy* >/dev/null 2>&1 || true
-rm -f $CERT_DIR/Caddyfile* /etc/apt/sources.list.d/caddy*
+rm -rf /etc/caddy /etc/apt/sources.list.d/caddy*
+log_success
 
-# --- 2. Instalação de Dependências ---
-echo -e "${YELLOW}==> Instalando dependências básicas...${NC}"
+log_step "Instalando dependências essenciais"
 wait_for_apt
-# -qq suprime saida excessiva, -y aceita tudo automaticamente
-apt-get update -y
-apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq apt-transport-https ca-certificates curl gnupg2 dirmngr dos2unix nano iptables iptables-persistent jq >/dev/null 2>&1
+log_success
 
-# --- 3. Instalação Node.js 18 ---
-# Descrição: Instala o Node.js para rodar aplicações e o PM2.
+log_step "Configurando Node.js 18 (LTS)"
 if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}==> Instalando Node.js 18...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null 2>&1
     wait_for_apt
-    apt-get install -y nodejs
+    apt-get install -y nodejs >/dev/null 2>&1
+    log_success
 else
-    echo -e "${GREEN}✓ Node.js já instalado.$(NC)"
+    echo -e "${GREEN}✅ (Já instalado)${NC}"
 fi
 
-# --- 4. Firewall Básico ---
-# Descrição: Libera portas 80 (HTTP) e 443 (HTTPS).
+log_step "Configurando Firewall (Portas 80/443)"
 iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-netfilter-persistent save >/dev/null 2>&1 || service netfilter-persistent save >/dev/null 2>&1
+netfilter-persistent save >/dev/null 2>&1 || true
+log_success
 
-# --- 5. Instalação PM2 ---
-# Descrição: Gerenciador de processos para manter os sites online.
-echo -e "${YELLOW}==> Configurando PM2...${NC}"
-npm install -g pm2 http-server
+log_step "Instalando PM2 (Gerenciador de Processos)"
+npm install -g pm2 http-server >/dev/null 2>&1
 env PATH=$PATH:/usr/bin pm2 startup systemd -u root --hp /root >/dev/null 2>&1 || true
 pm2 save --force >/dev/null 2>&1
+log_success
 
-# --- 6. Instalação Caddy (Repo Oficial) ---
-# Descrição: Servidor Web moderno que gera HTTPS automaticamente.
-echo -e "${YELLOW}==> Instalando Caddy Web Server...${NC}"
+log_step "Instalando Caddy Web Server"
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-chmod 644 /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-ARCH=$(dpkg --print-architecture)
 cat > /etc/apt/sources.list.d/caddy-stable.list <<EOF
-deb [arch=$ARCH signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
+deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main
 EOF
 wait_for_apt
-apt-get update -y
-apt-get install -y caddy
-
-# Cria Caddyfile padrão se não existir
-mkdir -p $CERT_DIR
-if [[ ! -f "$CERT_DIR/Caddyfile" ]]; then
-    cat > $CERT_DIR/Caddyfile <<'EOF'
-# Caddyfile gerenciado pelo menu-site
-EOF
-fi
-
-systemctl enable caddy
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y caddy >/dev/null 2>&1
+mkdir -p /etc/caddy
+echo "# Caddyfile gerenciado pelo menu-site" > /etc/caddy/Caddyfile
+systemctl enable caddy >/dev/null 2>&1
 systemctl restart caddy
+log_success
 
-# --- 7. Criação do Script de Gerenciamento (menu-site) ---
+# --- CRIAÇÃO DO MENU-SITE ---
+log_step "Gerando script de controle (menu-site)"
 cat > /usr/local/bin/menu-site <<'EOF'
 #!/usr/bin/env bash
-# menu-site — Gerenciador Completo (Caddy + Cloudflare DNS + Auto WWW)
-set -euo pipefail
+# menu-site — Interface CLI Premium
+set -u
 
-# Configurações Globais
+# CONFIGURAÇÕES
 CADDYFILE="/etc/caddy/Caddyfile"
+CF_CONFIG="/etc/caddy/.cf_config"
 CF_CERT="/etc/caddy/cloudflare.crt"
 CF_KEY="/etc/caddy/cloudflare.key"
-CF_CONFIG="/etc/caddy/.cf_config"
 BASE_PORT=3000
 
-# Cores
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# CORES
+R='\033[1;31m'    # Red
+G='\033[1;32m'    # Green
+Y='\033[1;33m'    # Yellow
+B='\033[1;34m'    # Blue
+C='\033[1;36m'    # Cyan
+W='\033[1;37m'    # White
+NC='\033[0m'      # No Color
+BOX_COLOR='\033[0;35m' # Purple for borders
+
+trap '' SIGINT SIGQUIT SIGTSTP # Impede Ctrl+C e Ctrl+Z de fechar abruptamente
+
+# --- UI HELPERS ---
 
 pause() {
   echo ""
-  read -rp "Pressione ENTER para continuar..."
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+  echo -e " ${W}Pressione [ENTER] para voltar ao menu...${NC}"
+  read -r
 }
 
-header() {
+draw_header() {
   clear
-  echo -e "${BLUE}========================================${NC}"
-  echo -e "      ${YELLOW}GERENCIADOR DE SITES PRO${NC}"
-  echo -e "      ${GREEN}By OGERRVA${NC}"
-  echo -e "${BLUE}========================================${NC}"
-  echo -e "Menu: $1"
+  echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${BOX_COLOR}║${NC}              ${C}🚀 GERENCIADOR DE SITES PRO${NC}                 ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║${NC}                  ${W}Dev: @OGERRVA${NC}                           ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}╠══════════════════════════════════════════════════════════╣${NC}"
+  echo -e "${BOX_COLOR}║${NC}  IP: ${Y}$(curl -s https://api.ipify.org)${NC}  |  Sites Ativos: ${G}$(grep -c ' {' "$CADDYFILE")${NC}            ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
 
-# --- FUNÇÃO: setup_cf_api ---
-# Descrição: Solicita ao usuário o Token e Zone ID da Cloudflare e salva
-# em um arquivo oculto (.cf_config) para uso posterior na criação de DNS.
+draw_menu_item() {
+  local num=$1
+  local text=$2
+  echo -e "   ${C}[${num}]${NC} ${W}${text}${NC}"
+}
+
+# --- FUNÇÕES LÓGICAS ---
+
 setup_cf_api() {
-  header "Configurar API Cloudflare"
-  echo "Para criar subdomínios automaticamente, insira seus dados."
-  echo "Necessário: Auth Token (ou Global Key + Email) e Zone ID."
+  draw_header
+  echo -e "${Y}🔧 CONFIGURAÇÃO API CLOUDFLARE${NC}"
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+  echo "Insira seus dados para automatizar a criação de DNS."
   echo ""
   
-  read -rp "Cloudflare Email (Enter para pular se usar Token): " cf_email
-  read -rp "Cloudflare API Key ou Token: " cf_key
-  read -rp "Zone ID (ID da Zona no painel da CF): " cf_zone
+  read -rp "Email (Enter p/ usar só Token): " cf_email
+  read -rp "API Token/Key: " cf_key
+  read -rp "Zone ID: " cf_zone
   
   if [[ -z "$cf_key" || -z "$cf_zone" ]]; then
-    echo -e "${RED}Dados insuficientes. Cancelado.${NC}"
-    return
-  fi
-
-  # Salvar config
-  cat > "$CF_CONFIG" <<CFEOF
+    echo -e "\n${R}✖ Dados incompletos. Operação cancelada.${NC}"
+  else
+    cat > "$CF_CONFIG" <<CFEOF
 CF_EMAIL="$cf_email"
 CF_KEY="$cf_key"
 CF_ZONE="$cf_zone"
 CFEOF
-  chmod 600 "$CF_CONFIG"
-  echo -e "${GREEN}Configuração salva em $CF_CONFIG!${NC}"
+    chmod 600 "$CF_CONFIG"
+    echo -e "\n${G}✔ Configuração salva com sucesso!${NC}"
+  fi
   pause
 }
 
-# --- FUNÇÃO: create_dns_record ---
-# Descrição: Usa a API da Cloudflare para criar um registro tipo 'A' apontando
-# o domínio solicitado para o IP público desta VPS.
 create_dns_record() {
   local domain="$1"
-  
-  if [[ ! -f "$CF_CONFIG" ]]; then
-    echo -e "${YELLOW}API Cloudflare não configurada. Configure na opção 6.${NC}"
-    return
-  fi
+  if [[ ! -f "$CF_CONFIG" ]]; then return; fi
   
   source "$CF_CONFIG"
-  
-  # Pegar IP Publico da VPS
   local public_ip
   public_ip=$(curl -s https://api.ipify.org)
   
-  echo -e "${YELLOW}Criando registro DNS A para $domain -> $public_ip ...${NC}"
+  echo -ne "${Y}⚡ Criando DNS na Cloudflare ($domain)... ${NC}"
   
   local response
-  # Define cabeçalhos dependendo se é Token ou Key+Email
   if [[ -z "$CF_EMAIL" ]]; then
-    # Usando Token Bearer
     response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records" \
-      -H "Authorization: Bearer $CF_KEY" \
-      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $CF_KEY" -H "Content-Type: application/json" \
       --data "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$public_ip\",\"ttl\":1,\"proxied\":true}")
   else
-    # Usando Global Key (X-Auth-Key)
     response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE/dns_records" \
-      -H "X-Auth-Email: $CF_EMAIL" \
-      -H "X-Auth-Key: $CF_KEY" \
-      -H "Content-Type: application/json" \
+      -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_KEY" -H "Content-Type: application/json" \
       --data "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$public_ip\",\"ttl\":1,\"proxied\":true}")
   fi
 
-  # Analisa a resposta JSON com jq
-  success=$(echo "$response" | jq -r '.success')
-  if [[ "$success" == "true" ]]; then
-    echo -e "${GREEN}✓ Sucesso! Subdomínio criado na Cloudflare (Proxied).${NC}"
+  if echo "$response" | jq -r '.success' | grep -q "true"; then
+    echo -e "${G}✔ Feito!${NC}"
   else
-    echo -e "${RED}❌ Erro ao criar DNS:${NC}"
-    echo "$response" | jq -r '.errors[].message'
-  fi
-  sleep 2
-}
-
-# --- FUNÇÃO: detect_cf_certs ---
-# Descrição: Verifica se existem certificados SSL manuais (origin certificates) salvos.
-detect_cf_certs() {
-  if [[ -f "$CF_CERT" && -f "$CF_KEY" ]]; then
-    USE_CF_SSL=true
-  else
-    USE_CF_SSL=false
+    echo -e "${R}✖ Falha!${NC}"
   fi
 }
 
-# --- FUNÇÃO: get_next_port ---
-# Descrição: Calcula a próxima porta livre começando de 3000 para uso em novas aplicações PM2.
 get_next_port() {
   local last_port
   last_port=$(grep -E 'reverse_proxy localhost:[0-9]+' "$CADDYFILE" | sed -E 's/.*:([0-9]+)/\1/' | sort -n | tail -n1)
-  if [[ "$last_port" =~ ^[0-9]+$ ]]; then
-    echo $((last_port + 1))
-  else
-    echo "$BASE_PORT"
-  fi
+  if [[ "$last_port" =~ ^[0-9]+$ ]]; then echo $((last_port + 1)); else echo "$BASE_PORT"; fi
 }
 
-# --- FUNÇÃO: configure_cf_certs ---
-# Descrição: Permite ao usuário colar o conteúdo de certificados .pem/.key manualmente.
-configure_cf_certs() {
-  header "Configurar Certificado Origin SSL (Arquivo)"
-  echo "Isso é para o modo 'Full (Strict)' usando certificado gerado na Cloudflare."
-  echo "1) Colar Certificado (.crt)"
-  echo "2) Colar Chave (.key)"
-  echo "0) Voltar"
-  read -rp "Opção: " opt
-  case $opt in
-    1) 
-      echo "Cole o conteúdo do CRT e pressione Ctrl+D:"
-      cat > "$CF_CERT"
-      chmod 644 "$CF_CERT"
-      echo -e "${GREEN}Salvo!${NC}" ;;
-    2)
-      echo "Cole o conteúdo da KEY e pressione Ctrl+D:"
-      cat > "$CF_KEY"
-      chmod 600 "$CF_KEY"
-      echo -e "${GREEN}Salvo!${NC}" ;;
-  esac
-  pause
-}
-
-# --- FUNÇÃO: add_site ---
-# Descrição: Principal função. Cria um novo site, configura o redirecionamento WWW,
-# gera o DNS (opcional) e configura o Caddyfile e PM2.
 add_site() {
-  detect_cf_certs
-  header "Adicionar Novo Site"
+  draw_header
+  echo -e "${Y}➕ ADICIONAR NOVO SITE${NC}"
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
   
-  read -rp "Domínio (ex: site.com ou app.site.com): " raw_domain
-  
-  # Limpeza do domínio (remove http://, https://, www.)
+  read -rp "🌐 Domínio (ex: site.com): " raw_domain
   domain=$(echo "$raw_domain" | sed -E 's/^\s*//;s/\s*$//;s/^(https?:\/\/)?(www\.)?//')
   
-  if [[ -z "$domain" ]]; then echo -e "${RED}Domínio inválido.${NC}"; pause; return; fi
+  if [[ -z "$domain" ]]; then echo -e "${R}Domínio inválido.${NC}"; pause; return; fi
   
-  echo -e "${YELLOW}Configurando para: $domain (e redirecionando www.$domain)${NC}"
-  echo ""
-  
-  # Pergunta sobre DNS Cloudflare
-  read -rp "Deseja criar o subdomínio/domínio na Cloudflare agora? (s/n): " create_dns
-  if [[ "$create_dns" =~ ^[sS]$ ]]; then
+  # Check CF API existence
+  if [[ -f "$CF_CONFIG" ]]; then
     create_dns_record "$domain"
-    # Opcional: criar também o www se for domínio raiz
     create_dns_record "www.$domain"
   fi
   
   echo ""
-  echo "Modo SSL/TLS:"
-  echo " 1) Auto TLS (Let's Encrypt - Padrão)"
-  echo " 2) Cloudflare Origin SSL (Requer certs configurados)"
-  echo " 3) HTTP Only (Sem SSL)"
-  read -rp "Escolha [1-3]: " tls_opt
+  echo -e "${C}🔐 TIPO DE SEGURANÇA (SSL):${NC}"
+  echo -e "   1) Automático (Let's Encrypt) ${G}[Recomendado]${NC}"
+  echo -e "   2) Cloudflare Origin (Requer certificado)"
+  echo -e "   3) HTTP (Inseguro)"
+  echo ""
+  read -rp "Opção [1]: " ssl_opt
+  ssl_opt=${ssl_opt:-1}
+
+  local tls_line=""
+  local tls_redir=""
   
-  local tls_config=""
-  local tls_redirect_config=""
-  
-  case $tls_opt in
-    1) tls_config="";; # Auto
-    2) 
-       if ! $USE_CF_SSL; then echo -e "${RED}Certificados CF não encontrados na opção 5.${NC}"; pause; return; fi
-       tls_config="tls $CF_CERT $CF_KEY"
-       tls_redirect_config="tls $CF_CERT $CF_KEY"
-       ;;
-    3) 
-        # HTTP only
-        domain="http://$domain"
-        tls_config=""
-        ;;
-    *) echo "Inválido"; return;;
+  case $ssl_opt in
+    2) tls_line="tls $CF_CERT $CF_KEY"; tls_redir=$tls_line ;;
+    3) domain="http://$domain";;
+    *) ;;
   esac
 
   echo ""
-  echo "Tipo de Aplicação:"
-  echo " 1) Site Estático (HTML/JS)"
-  echo " 2) Aplicação Node/Python/etc (Reverse Proxy)"
-  read -rp "Escolha [1-2]: " app_type
+  echo -e "${C}📦 TIPO DE APLICAÇÃO:${NC}"
+  echo -e "   1) Site Estático (HTML)"
+  echo -e "   2) Aplicação PM2 (Node/Python/Proxy)"
+  echo ""
+  read -rp "Opção [1]: " app_opt
+  app_opt=${app_opt:-1}
   
-  local caddy_directive=""
+  local config_block=""
+  mkdir -p "/var/www/$domain"
   
-  if [[ "$app_type" == "2" ]]; then
-    port=$(get_next_port)
-    echo -e "${GREEN}→ Porta alocada: $port${NC}"
-    caddy_directive="reverse_proxy localhost:$port"
+  if [[ "$app_opt" == "2" ]]; then
+    local port=$(get_next_port)
+    config_block="reverse_proxy localhost:$port"
     
-    # Iniciar exemplo no PM2
-    mkdir -p "/var/www/$domain"
+    # Create simple server
     cat > "/var/www/$domain/server.js" <<JS
 const http = require('http');
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end('<h1>Site $domain rodando via PM2!</h1>');
-});
-server.listen($port, () => console.log('Rodando na porta $port'));
+http.createServer((req, res) => {
+  res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
+  res.end('<h1>$domain rodando na porta $port 🚀</h1>');
+}).listen($port);
 JS
-    pm2 start "/var/www/$domain/server.js" --name "$domain"
+    pm2 start "/var/www/$domain/server.js" --name "$domain" >/dev/null
     pm2 save >/dev/null
-    
+    echo -e "\n${G}✔ App iniciada na porta $port${NC}"
   else
-    caddy_directive="file_server"
-    mkdir -p "/var/www/$domain"
+    config_block="file_server"
     cat > "/var/www/$domain/index.html" <<HTML
-<!DOCTYPE html>
-<html><head><title>$domain</title></head>
-<body style="background:#222;color:#fff;text-align:center;padding-top:50px;">
-<h1>Bem-vindo a $domain</h1><p>Configurado via Menu-Site</p>
-</body></html>
+<!DOCTYPE html><html><body style="background:#1a1a1a;color:white;display:flex;justify-content:center;align-items:center;height:100vh;">
+<h1>$domain Configurado com Sucesso! 🚀</h1></body></html>
 HTML
   fi
 
-  # --- ESCRITA NO CADDYFILE ---
-  # Lógica: 
-  # 1. Bloco WWW -> Redireciona para non-www
-  # 2. Bloco Principal -> Configuração real
-  
+  # Add to Caddyfile with WWW redirect logic
   cat >> "$CADDYFILE" <<EOB
 
-# --- Site: $domain ---
 www.$domain {
-    $tls_redirect_config
+    $tls_redir
     redir https://$domain{uri}
 }
 
 $domain {
-    $tls_config
+    $tls_line
     root * /var/www/$domain
     encode gzip
-    $caddy_directive
+    $config_block
 }
 EOB
 
-  # Formata e Recarrega
-  caddy fmt --overwrite "$CADDYFILE" >/dev/null
-  if caddy validate --config "$CADDYFILE"; then
+  if caddy fmt --overwrite "$CADDYFILE" >/dev/null && caddy validate --config "$CADDYFILE" >/dev/null; then
     systemctl reload caddy
-    echo -e "${GREEN}✔ Site configurado com sucesso!${NC}"
-    echo -e "Acesse: https://$domain (O www.$domain redirecionará automaticamente)"
+    echo -e "${G}✔ Site configurado e online!${NC}"
   else
-    echo -e "${RED}❌ Erro na validação do Caddyfile. Restaurando...${NC}"
+    echo -e "${R}✖ Erro na configuração do Caddyfile.${NC}"
   fi
   pause
 }
 
-# --- FUNÇÃO: list_sites ---
-# Descrição: Lista todos os sites ativos no Caddyfile.
 list_sites() {
-  header "Sites Ativos"
-  # Filtra nomes de domínios que não começam com www e não são diretivas
-  grep -E '^[a-zA-Z0-9].+ \{$' "$CADDYFILE" | grep -v "www." | sed 's/ {//' | nl
+  draw_header
+  echo -e "${Y}📋 LISTA DE SITES ATIVOS${NC}"
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+  printf "${C}%-4s %-30s %-15s${NC}\n" "ID" "DOMÍNIO" "TIPO"
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+  
+  local i=1
+  # Extract domains properly
+  grep -E '^[a-zA-Z0-9].+ \{$' "$CADDYFILE" | grep -v "www." | sed 's/ {//' | while read -r site; do
+    if grep -q "reverse_proxy" "$CADDYFILE"; then type="Proxy/App"; else type="Estático"; fi
+    printf "${W}%-4s %-30s %-15s${NC}\n" "$i" "$site" "$type"
+    ((i++))
+  done
+  echo ""
   pause
 }
 
-# --- FUNÇÃO: remove_site ---
-# Descrição: Remove configuração do Caddyfile, arquivos locais e processo PM2.
 remove_site() {
-  header "Remover Site"
-  # Listar sites para o usuário escolher (array)
-  sites=($(grep -E '^[a-zA-Z0-9].+ \{$' "$CADDYFILE" | grep -v "www." | sed 's/ {//'))
+  draw_header
+  echo -e "${Y}🗑️  REMOVER SITE${NC}"
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
   
-  if [[ ${#sites[@]} -eq 0 ]]; then echo "Nenhum site encontrado."; pause; return; fi
+  sites=($(grep -E '^[a-zA-Z0-9].+ \{$' "$CADDYFILE" | grep -v "www." | sed 's/ {//'))
+  if [[ ${#sites[@]} -eq 0 ]]; then echo "Nenhum site."; pause; return; fi
   
   local i=1
-  for site in "${sites[@]}"; do
-    echo "$i) $site"
-    ((i++))
-  done
+  for site in "${sites[@]}"; do echo -e "   ${C}[$i]${NC} $site"; ((i++)); done
   
-  read -rp "Número do site para remover: " num
+  echo ""
+  read -rp "Digite o número para remover (0 para cancelar): " num
+  
   if [[ "$num" -gt 0 && "$num" -le "${#sites[@]}" ]]; then
     domain="${sites[$((num-1))]}"
-    echo -e "${YELLOW}Removendo $domain e www.$domain...${NC}"
     
-    # Remove do Caddyfile (Bloco principal e bloco www)
     sed -i "/^$domain \{/,/^\}/d" "$CADDYFILE"
     sed -i "/^www.$domain \{/,/^\}/d" "$CADDYFILE"
     
-    # Limpa PM2 se existir
     pm2 delete "$domain" >/dev/null 2>&1 || true
     pm2 save >/dev/null
-    
-    # Remove arquivos
-    read -rp "Excluir arquivos em /var/www/$domain? (s/n): " del_files
-    if [[ "$del_files" == "s" ]]; then
-        rm -rf "/var/www/$domain"
-    fi
+    rm -rf "/var/www/$domain"
     
     caddy fmt --overwrite "$CADDYFILE" >/dev/null
     systemctl reload caddy
-    echo -e "${GREEN}Removido com sucesso.${NC}"
-  else
-    echo "Inválido."
+    echo -e "\n${G}✔ Site $domain removido completamente.${NC}"
   fi
   pause
 }
 
-# --- Loop Principal ---
+# --- LOOP PRINCIPAL ---
 while true; do
-  header "Menu Principal"
-  echo "1) Listar Sites"
-  echo "2) Adicionar Novo Site (c/ Redirecionamento WWW)"
-  echo "3) Remover Site"
-  echo "4) Editar Caddyfile Manualmente"
-  echo "5) Configurar Certificados Cloudflare (Arquivos)"
-  echo "6) Configurar API Cloudflare (Para criar DNS)"
-  echo "7) Ver Status PM2"
-  echo "0) Sair"
+  draw_header
+  echo -e "   ${Y}MENU PRINCIPAL${NC}"
+  draw_menu_item "1" "Listar Sites"
+  draw_menu_item "2" "Adicionar Novo Site"
+  draw_menu_item "3" "Remover Site"
   echo ""
-  read -rp "Escolha: " op
+  draw_menu_item "4" "Configurar API Cloudflare (DNS Auto)"
+  draw_menu_item "5" "Editar Certificados Manuais"
+  draw_menu_item "6" "Monitor PM2"
+  echo ""
+  draw_menu_item "0" "Sair"
+  echo ""
+  echo -e "${BOX_COLOR}────────────────────────────────────────────────────────────${NC}"
+  read -rp "Escolha uma opção: " opt
   
-  case $op in
+  case $opt in
     1) list_sites ;;
     2) add_site ;;
     3) remove_site ;;
-    4) nano "$CADDYFILE"; systemctl reload caddy ;;
-    5) configure_cf_certs ;;
-    6) setup_cf_api ;;
-    7) pm2 list; pause ;;
-    0) exit 0 ;;
-    *) echo "Opção inválida."; sleep 1 ;;
+    4) setup_cf_api ;;
+    5) nano "$CF_CERT"; nano "$CF_KEY"; pause ;;
+    6) pm2 monit ;;
+    0) clear; echo -e "${G}👋 Até logo!${NC}"; exit 0 ;;
+    *) ;;
   esac
 done
 EOF
-
 chmod +x /usr/local/bin/menu-site
+log_success
 
-echo -e "${GREEN}==> Instalação Concluída! Abrindo menu...${NC}"
-# Inicia automaticamente
+echo ""
+echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║      ${GREEN}✅ INSTALAÇÃO CONCLUÍDA COM SUCESSO!${BLUE}                    ║${NC}"
+echo -e "${BLUE}║      Digite ${YELLOW}menu-site${BLUE} para começar.                             ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Iniciar automaticamente
 menu-site
