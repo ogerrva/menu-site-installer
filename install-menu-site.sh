@@ -19,7 +19,7 @@ BOX_COLOR='\033[0;35m'
 log_header() {
   clear
   echo -e "${BOX_COLOR}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOX_COLOR}║ ${CYAN}                 ⚡ FYX-AUTOWEB INSTALLER ⚡              ${BOX_COLOR}║${NC}"
+  echo -e "${BOX_COLOR}║ ${CYAN}                 ⚡ FYX-AUTOWEB INSTALLER ⚡                 ${BOX_COLOR}║${NC}"
   echo -e "${BOX_COLOR}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
